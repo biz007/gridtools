@@ -137,6 +137,10 @@ arguments|option|description
 
 
 # Simple Code Example
+Below is a package of the test data and demo code for the GRID-seq analysis with test dataset at: `http://fugenome.ucsd.edu/gridseq/datasets/gridseq.test10M.raw.fq.gz`:
+
+Demo code is in the gridtools/tests/test.sh
+
 
 # License
 The *GridTools* is licensed under **MIT**. The detailed license terms are in the **LICENSE** file.

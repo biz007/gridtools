@@ -14,7 +14,7 @@ if [[ ! -e ${idx_grid}.bwt ]]; then
 	bwa index -p $idx_grid "${idx_grid}.fa"
 fi
 
-for fq in gridseq.test*.raw.fq.gz; do 
+for fq in data/gridseq.test*.fq.gz; do 
 	fqx=${fq/fq/trimmed.fq}
 
 if [[ ! -e $fqx ]]; then
@@ -25,9 +25,9 @@ if [[ ! -e $fqx ]]; then
 fi
 
 	lbam=${fq/fq.gz/GRIDv1.bam}
+	lbam=${lbam/data/.}
 if [[ ! -e $lbam ]]; then
 	echo $lbam
-	touch $lbam
 
 	bwa mem -t 11 -k 5 -L 4 -B 2 -O 4 $idx_grid $fqx | \
 	samtools view -ub - | samtools sort -@ 11 -m 1G -o $lbam -
@@ -36,17 +36,16 @@ fi
 
 
 ##2. mapping to the genome
-	prf=$(basename $lbam); prf=${prf/.raw.*bam}
-
-	h5f="${prf}.h5"
-	fqm="${prf}.mate.fq.gz"
-	mid=${prf/gridseq./}
+	h5f="${fq/fq.gz/h5}"
+	fqm="${fq/fq.gz/mate.fq.gz}"
+	mid=${fq/gridseq.}; mid=${mid/.fq.gz}
 
 	echo $fqm
 	python GridTools.py matefq -n $mid -o $h5f $lbam | gzip -c > $fqm
 
 
 	bamx="${prf}.mate.${gx}.srt.bam"
+	bamx="${fqm/.fq.gz}.${gx}.srt.bam"
 	bamy=${bamx/srt/fix}
 	bamz=${bamx/srt/mrk}
 
@@ -68,7 +67,7 @@ fi
 	stat=${dbin/dnabin.txt.gz/stats}
 
 
-	gridtools evaluate -k 1 -m 10 -g data/GRCm38.gencode.gtf.gz -o $h5f $bam
+	gridtools evaluate -k 1 -m 10 -g GRCm38.gencode.gtf.gz -o $h5f $bam
 	gridtools stats -clbqr -p $stat $h5f
 
 	gridtools DNA $h5f | gzip -c > $dbin
