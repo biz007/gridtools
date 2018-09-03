@@ -3,7 +3,7 @@
 **GridTools** is a set of tools designed for analyzing GRID-seq data that genome-wide captures RNA-chromatin interactions.
 
 # Install
-**GridTools** is developed in *Python* 3.6.4 and compatibible with *Python* 3.6+, with dependent libraries as below:
+**GridTools** is developed in *Python* 3.6.4 and compatible with *Python* 3.6+, with dependent libraries as below:
 
 ## Requirements
 We recommend using pip package management with virtualenv.
