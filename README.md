@@ -31,7 +31,7 @@ GridTools.py [-h] [--version] {matefq,evaluate RNA,DNA,matrix,model,stats} ...
 
 There are 7 sub-commands designed for specific functions.
 
-sub-command|description
+sub-command|function
 ---|---
 **matefq**|parse *BAM* file that mapped to GRID-seq linker to RNA-DNA mate in interleaved *FASTQ* file.
 **evaluate**|evaluate the RNA-DNA mates quality and quanitity from the *BAM* file mapped to the genome.
