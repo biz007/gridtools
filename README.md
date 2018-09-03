@@ -6,7 +6,7 @@
 **GridTools** is developed in *Python* 3.6.4 and compatible with *Python* 3.6+, with dependent libraries as below:
 
 ## Requirements
-We recommend using pip package management with virtualenv.
+We recommend using pip package management in virtualenv.
 
 library|install command
 ---|---
@@ -25,11 +25,13 @@ chmod +x ~/bin/GridTools.py
 ```
 
 # Usage
-*GridTools.py* [-h] [--version] {matefq,evaluate RNA,DNA,matrix,model,stats} ...
+```
+GridTools.py [-h] [--version] {matefq,evaluate RNA,DNA,matrix,model,stats} ...
+```
 
 There are 7 sub-commands designed for specific functions.
 
-sub-command|function description
+sub-command|description
 ---|---
 **matefq**|parse *BAM* file that mapped to GRID-seq linker to RNA-DNA mate in interleaved *FASTQ* file.
 **evaluate**|evaluate the RNA-DNA mates quality and quanitity from the *BAM* file mapped to the genome.
@@ -45,7 +47,7 @@ GridTools.py matefq [-h] -o HDF5 [-l MINLEN] [-n READNAME] bam
 ```
 parse *BAM* file that mapped to GRID-seq linker to RNA-DNA mate in interleaved *FASTQ* file.
 
-arguments|option|function description
+arguments|option|description
 ---|---|---
 `bam`|required|*BAM* file mapped to the GRID-seq Linker.
 `-o/--hdf5 HDF5`|required|output mapping information to *HDF5*.
@@ -58,7 +60,7 @@ GridTools.py matefq [-h] -o HDF5 [-k BINK] [-m WINM] -g GTF bam
 ```
 evaluate the RNA-DNA mates quality and quanitity from the *BAM* file mapped to the genome.
 
-arguments|option|function description
+arguments|option|description
 ---|---|---
 `bam`|required|*BAM* file mapped to the GRID-seq Linker.
 `-o/--hdf5 HDF5`|required|output mapping information to *HDF5*.
@@ -72,7 +74,7 @@ GridTools.py RNA [-h] [-e EXPRS] [-s SCOPE] hdf5
 ```
 identify chromatin-enriched RNAs and evaluate the gene expressoin levels as well as interaction scopes.
 
-arguments|option|function description
+arguments|option|description
 ---|---|---
 `hdf5`|required|*HDF5* file with mapping information evaluated by *GridTools*.
 `-e/--exprs EXPRS`|optional|output file for the gene expression [default: print to the screen].
@@ -84,7 +86,7 @@ GridTools.py DNA [-h] hdf5
 ```
 identify RNA-enriched chromatin regions in background (trans) and foreground (cis).
 
-arguments|option|function description
+arguments|option|description
 ---|---|---
 `hdf5`|required|*HDF5* file with mapping information evaluated by *GridTools*.
 
@@ -95,7 +97,7 @@ GridTools.py stats [-h] -p PREFIX [-c] [-l] [-b] [-q] [-r] hdf5
 ```
 statistics of GRID-seq data.
 
-arguments|option|function description
+arguments|option|description
 ---|---|---
 `hdf5`|required|*HDF5* file with mapping information evaluated by *GridTools*.
 `-p/--prefix PREFIX`|required|prefix of output file names.
@@ -112,7 +114,7 @@ GridTools.py matrix [-h] [-k RPK] [-x DRPK] hdf5
 ```
 cacluate the RNA-chromatin interation matrix.
 
-arguments|option|function description
+arguments|option|description
 ---|---|---
 `hdf5`|required|*HDF5* file with mapping information evaluated by *GridTools*.
 `-k/--rpk RPK`|optional|RPK of RNA reads from gene. [default: 100]
@@ -125,7 +127,7 @@ GridTools.py model [-h] [-k RPK] [-x DRPK] -e ELEBED [-z ZSCORE] hdf5
 ```
 model the network of enhancer-promoter proximity.
 
-arguments|option|function description
+arguments|option|description
 ---|---|---
 `hdf5`|required|*HDF5* file with mapping information evaluated by *GridTools*.
 `-e/--elebed ELEBED`|required|*BED* file of regulatory elements (eg. enhancers and promoters).
