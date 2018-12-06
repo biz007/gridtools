@@ -4,7 +4,8 @@ GRID-seq workflow in Nat. Protocol
 import os
 
 # Setting of genome
-base = os.path.join(os.environ["HOME"], "github/zhouyu/gridtools/pipeline")
+# cd ~; git clone gridtools;
+base = os.path.join(os.environ["HOME"], "gridtools/pipeline")
 genomeDir = os.path.join(base, "genome") # Genome and annotation
 dataDir = os.path.join(base, "data")     # Experimental raw data
 girdDir = os.path.join(base, "gridcfg")  # GRID library configuration
@@ -28,7 +29,7 @@ rule all:
         expand(os.path.join(outDir, "mapped/{sample}.mate.mrk.bam"), sample=samples),
         os.path.join(outDir, "gene/mm10.gtf.gz"),
         expand(os.path.join(outDir, "qcAlignment/{sample}.h5"), sample=samples),
-        expand(os.path.join(outDir, "qcStats/{sample}.stats"), sample=samples),
+        expand(os.path.join(outDir, "qcStats/{sample}.stats.bases.txt"), sample=samples),
         expand(os.path.join(outDir, "RNA/{sample}.gene_expr.txt"), sample=samples),
         expand(os.path.join(outDir, "RNA/{sample}.gene_scope.txt"), sample=samples),
         expand(os.path.join(outDir, "DNA/{sample}.dna.txt.gz"), sample=samples),
@@ -172,10 +173,16 @@ rule QC_stats:
     input:
         h5 = os.path.join(outDir, "qcAlignment/{sample}.h5"),
     output:
-        stats = os.path.join(outDir, "qcStats/{sample}.stats"), 
+        base = os.path.join(outDir, "qcStats/{sample}.stats.bases.txt"),
+        count = os.path.join(outDir, "qcStats/{sample}.stats.counts.txt"),
+        length = os.path.join(outDir, "qcStats/{sample}.stats.lengths.txt"),
+        qual = os.path.join(outDir, "qcStats/{sample}.stats.quals.txt"),
+        resolution = os.path.join(outDir, "qcStats/{sample}.stats.resolution.txt"),
+    param:
+        prefix = os.path.join(outDir, "qcStats/{sample}.stats"),
     shell:
         """
-        ./bin/GridTools.py stats -clbqr -p {output.stats} {input.h5}
+        ./bin/GridTools.py stats -clbqr -p {params.prefix} {input.h5}
         """
 
 rule quantify_RNA:
