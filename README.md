@@ -6,16 +6,11 @@
 **GridTools** is developed in *Python* 3.6.4 and compatible with *Python* 3.6+, with dependent libraries as below:
 
 ## Requirements
-We recommend using pip package management in virtualenv.
+We recommend using *conda* package manager (https://conda.io/miniconda.html) to install required bioinformatics tools and packages in *Bioconda* (https://bioconda.github.io/). And install `bwa`, `samtools`, `cutadapt`, `numpy`, `scipy`, `pandas`, `pysam`, `h5py`:
+```
+conda install -c bioconda bwa samtools cutadapt numpy scipy pandas pysam h5py
+```
 
-library|install command
----|---
-`numpy`|`pip install numpy`
-`scipy`|`pip install scipy`
-`pandas`|`pip install pandas`
-`pysam`|`pip install pysam`
-`h5py`|`pip install h5py`
-`sqlite3`|`pip install sqlite3`
 
 ## Installing
 **GridTools** is ready to use without any further setups in install. 
