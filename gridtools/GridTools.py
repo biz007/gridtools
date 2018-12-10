@@ -91,7 +91,7 @@ class GridLinker(object):
 
 
     def tohdf5(self):
-        with h5py.File(self.h5file, 'w', libver='latest') as hf:
+        with h5py.File(self.h5file, libver='latest') as hf:
             hg = hf.create_group('/linker/stats')
             for k in self._stats.keys():
                 if k == 'counts':
@@ -403,7 +403,7 @@ class GridGenome(object):
 
     
     def tohdf5(self):
-        with h5py.File(self.h5file, 'r+') as hf:
+        with h5py.File(self.h5file, libver='latest') as hf:
             h5path = '/genome/stats'
 
             if h5path in hf: del hf[h5path]
