@@ -5,12 +5,14 @@
 A toolset for quality control, evlation and processing of GRID-seq libarary.
 '''
 
-import sys, argparse, re
+import os, sys, argparse, re
 import numpy as np 
 import pandas as pd
 import pysam 
 import h5py
 import sqlite3
+
+from concurrent.futures import ProcessPoolExecutor
 
 
 
@@ -28,11 +30,8 @@ class GridLinker(object):
         
 
     def fqmates(self):
-        with pysam.AlignmentFile(self.bamfile, 'rb') as bam: # pylint: disable=maybe-no-member
-            self._stats['counts'] = {'reads.total':0, 'reads.linked':0, 'reads.mates':0, 
-                'mates.mapped':0, 'mates.paired':0, 'mates.dups':0, 
-                'RNA.mapped':0, 'RNA.dups':0, 'DNA.mapped':0, 'DNA.dups':0}
-
+        with pysam.AlignmentFile(self.bamfile, 'rb', require_index=True, threads=os.cpu_count()) as bam: # pylint: disable=maybe-no-member
+            self._stats['counts'] = {'reads.total':0, 'reads.linked':0, 'reads.mates':0}
             self._stats['sizes'] = np.zeros((100,3), dtype=int)
 
             lenr, lend, lenl = 20, 20, bam.lengths[0]
@@ -92,8 +91,8 @@ class GridLinker(object):
 
 
     def tohdf5(self):
-        with h5py.File(self.h5file, 'w') as hf:
-            hg = hf.create_group('stats')
+        with h5py.File(self.h5file, 'w', libver='latest') as hf:
+            hg = hf.create_group('/linker/stats')
             for k in self._stats.keys():
                 if k == 'counts':
                     xa = np.fromiter(self._stats[k].items(), dtype=[('key', 'S20'), ('value', 'i4')])
@@ -149,7 +148,7 @@ class GridLinker(object):
         self._h5file = filename
 
 
-#  ----------------------------------- GridLinker ----------------------------------- 
+#  ----------------------------------- END of GridLinker ----------------------------------- 
 
 
 class GridGenome(object):
@@ -178,7 +177,6 @@ class GridGenome(object):
     @bamfile.setter
     def bamfile(self, file):
         self._bamfile = file
-
 
     @property
     def h5file(self):
@@ -247,166 +245,178 @@ class GridGenome(object):
             xs = np.repeat(self.dfchrom['Chrom'], chrbins)
             xr = np.concatenate([np.arange(n) for n in chrbins])
             df = pd.DataFrame({'Chrom': xs, 'Bin': xr})
+            df.Bin = df.Bin * self.bink*1000
             
             self._data['dfbinid'] = df
         
         return self._data['dfbinid']
 
 
-    def evaluate(self):
-        with h5py.File(args.hdf5, 'r') as hf:
-            xa = np.array(hf.get('stats/counts'))
-            self._stats['counts'] = dict(zip([k.decode('utf-8') for k in xa['key']], xa['value']))
+    def itermate(self):
+        self._stats['counts'] = {'mates.paired':0, 'mates.mapped':0, 'mates.unique':0, 'mates.dups':0}
 
-        self._stats['counts']['mates.mapped'] = 0
-        self._stats['counts']['mates.paired'] = 0
-        self._stats['counts']['mates.dups'] = 0
-        self._stats['counts']['RNA.mapped'] = 0
-        self._stats['counts']['RNA.dups'] = 0
-        self._stats['counts']['DNA.mapped'] = 0
-        self._stats['counts']['DNA.dups'] = 0
+        with pysam.AlignmentFile(self.bamfile, 'rb', threads=os.cpu_count()) as bam:                            # pylint: disable=maybe-no-member
+            if bam.header['HD']['SO'] != 'queryname':
+                raise IOError('The input bam file is not sorted by read name.')
 
-        mates = {'RNA':{}, 'DNA':{}}
-        with pysam.AlignmentFile(self.bamfile, 'rb') as bam:                            # pylint: disable=maybe-no-member
+            # rid, RNA [chrom, pos, strand], DNA [chrom, pos, strand], rdup
+            mread = {}
             for read in bam:
-                self._stats['counts']['mates.mapped'] += 1
-
                 if read.is_paired:
+                    rid = read.query_name
+                    rchr = '.' if read.is_unmapped else read.reference_name
+                    rpos = -1 if read.is_unmapped else int((read.reference_start + read.reference_end)/2)
+                    rstr = '.' if read.is_unmapped else ('-' if read.is_reverse else '+')
+                    rdup = 1 if read.is_duplicate else 0
+
                     if read.is_read1:
+                        mread['rid'] = rid
+                        mread['RNA'] = (rchr, rpos, rstr)
+                        mread['DNA'] = ('.', -2, '.')
+                        mread['rdup'] = rdup
+                    elif mread['rid'] == rid:
+                        mread['DNA'] = (rchr, rpos, rstr)
+                        mread['rdup'] += rdup
                         self._stats['counts']['mates.paired'] += 1
-                        self._stats['counts']['RNA.mapped'] += 1
-                        self._stats['counts']['DNA.mapped'] += 1
 
-                        if read.is_duplicate or read.is_supplementary:
-                            self._stats['counts']['mates.dups'] += 1
-                            self._stats['counts']['RNA.dups'] += 1
-                            self._stats['counts']['DNA.dups'] += 1
-                        else:
-                            mid = read.query_name
-                            rchr = read.reference_name
-                            rpos = int((read.reference_start + read.reference_end)/2)
-                            rstr = '-' if read.is_reverse else '+'
-                            mates['RNA'][mid] = (mid, rchr, rpos, rstr)
-                    else:
-                        self._stats['counts']['mates.mapped'] -= 1
+                        if mread['RNA'][1] >= 0 and mread['DNA'][1] >= 0:
+                            self._stats['counts']['mates.mapped'] += 1
 
-                        if not (read.is_duplicate or read.is_supplementary):
-                            mid = read.query_name
-                            dchr = read.reference_name
-                            dpos = int((read.reference_start + read.reference_end)/2)
-                            dstr = '-' if read.is_reverse else '+'
-                            mates['DNA'][mid] = (mid, dchr, dpos, dstr)
+                            if mread['rdup'] > 1:
+                                self._stats['counts']['mates.dups'] += 1
+                            else:
+                                self._stats['counts']['mates.unique'] += 1
+                                yield (mread['rid'],) + mread['RNA'] + mread['DNA']
 
-                elif read.is_read1:
-                    self._stats['counts']['RNA.mapped'] += 1
 
-                    if read.is_duplicate or read.is_supplementary:
-                        self._stats['counts']['RNA.dups'] += 1
-                elif read.is_read2:
-                    self._stats['counts']['DNA.mapped'] += 1
-
-                    if read.is_duplicate or read.is_supplementary:
-                        self._stats['counts']['DNA.dups'] += 1
-
-        
-        ### init read mate of RNA-DNA
+    def _p_join_dfgene(self, dfx):
         conn = sqlite3.connect(':memory:')
-        pd.DataFrame(np.array(list(mates['RNA'].values()), 
-            dtype=[('seqid', 'S100'), ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1')]
-        )).to_sql('grna', conn, index=False, index_label='seqid')
-        pd.DataFrame(np.array(list(mates['DNA'].values()), 
-            dtype=[('seqid', 'S100'), ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1')]
-        )).to_sql('gdna', conn, index=False, index_label='seqid')
-        
+        self.dfgene.to_sql('gene', conn, index=False, index_label=['Chrom', 'Start', 'End', 'Strand'])
+        dfx.to_sql('rmate', conn, index=False, index_label=['rchrom', 'rpos', 'rstrand', 'dchrom', 'dpos'])
+
         qstr = '''
             SELECT 
-                rchrom, rpos, rstrand, dchrom, dpos, dstrand, grna.seqid
-            FROM 
-                grna JOIN gdna ON 
-                    grna.seqid = gdna.seqid
-        '''
-        dfrmate = pd.read_sql_query(qstr, conn)
-
-        self._data['rmate'] = dfrmate
-        conn.close()
-
-        conn = sqlite3.connect(':memory:')
-        dfrmate.to_sql('rmate', conn, index=False, index_label=['rchrom', 'rpos', 'rstrand', 'dchrom'])
-        self.dfbinid.to_sql('binid', conn, index=False, index_label=['Chrom', 'Bin'])
-
-
-        ### init DNA reads at genomic bins
-        self._data['DNA'] = {}
-
-        qstr = '''
-            SELECT Chrom, Bin, xtype, COUNT(*) reads
-            FROM (
-                SELECT 
-                    dchrom Chrom, 
-                    CAST(dpos / {}  as INTEGER) Bin, 
-                    CASE dchrom = rchrom WHEN 1 THEN 'FG' ELSE 'BG' END xtype
-                FROM rmate
-            ) 
-            GROUP BY Chrom, Bin, xtype
+                seqid, rchrom, rpos, rstrand, dchrom, dpos, dstrand,
+                GeneID, CAST(dpos / {0}  as INTEGER) * {0} Bin,
+                CASE dchrom = rchrom WHEN 1 THEN 'cis' ELSE 'trans' END xtype
+            FROM rmate LEFT JOIN gene ON 
+                rchrom = Chrom and rstrand = Strand and rpos BETWEEN Start AND End
         '''.format(self.bink*1000)
 
-        dfdbin = pd.read_sql_query(qstr, conn)
-        dfdbin = dfdbin.set_index(['Chrom', 'Bin', 'xtype'])['reads'].unstack('xtype').reset_index()
-
-        self._data['DNA']['reads'] = pd.merge(self.dfbinid, dfdbin, how='left', on=['Chrom', 'Bin']).fillna(0)
-
-
-        ### init RNA reads for each gene annotation
-        self._data['RNA'] = {}
-
-        self.dfgene.to_sql('gene', conn, index=False, index_label=['Chrom', 'Start', 'End', 'Strand'])
-        qstr = '''
-            SELECT 
-                GeneID, Chrom, Start, End, Strand, 
-                dchrom, dpos, dstrand
-            FROM gene JOIN rmate ON 
-                Chrom = rchrom and Strand = rstrand and rpos BETWEEN Start AND End
-        '''
-
-        dfgmate = pd.read_sql_query(qstr, conn)
+        dfy = pd.read_sql_query(qstr, conn)
         conn.close()
 
-        dfgmate = dfgmate.assign(
-            Scope = lambda x: np.where(x.Chrom != x.dchrom, -1, 
-                np.int8(np.log10(np.maximum(np.abs(x.dpos - (x.Start+x.End)/2) - (x.End-x.Start)/2, 0)+1))
+        return dfy
+
+
+    def evalmate(self):
+        '''
+            store the read mate in dataframe
+        '''
+
+        if 'rmate' not in self._data:
+            dfrmate = pd.DataFrame(
+                np.array(list(self.itermate()), dtype=[
+                    ('seqid', 'S100'), 
+                    ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
+                    ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1')
+                ])
             )
-        )
+
+            dflist = np.array_split(dfrmate, os.cpu_count()*10, axis=0)
+
+            with ProcessPoolExecutor() as pool:
+                self._data['rmate'] = pd.concat(
+                    pool.map(self._p_join_dfgene, dflist)
+                )
+
+        return True
+
+
+    def evaldna(self):
+        '''
+            summarize DNA reads in genomic bins
+        '''
+
+        df = self._data['rmate'][
+                ['dchrom', 'Bin', 'xtype', 'GeneID']
+            ].groupby(['dchrom', 'Bin', 'xtype']).count()['GeneID'].unstack('xtype', fill_value=0).reset_index().rename(
+                columns={'dchrom':'Chrom'}
+            )
         
-        dfscope = dfgmate.groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'Scope']).size().reset_index().rename(columns={0:'reads'})
+        df = pd.merge(self.dfbinid, df, how='left', on=['Chrom', 'Bin']).fillna(0)
+
+        self._data['DNA.reads'] = df
+
+        return True
+
+
+    def evalrna(self):
+        '''
+            summarize RNA reads in genes
+        '''
+
+        dfscope = pd.merge(
+            self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']], 
+            self._data['rmate'][['GeneID', 'xtype', 'dpos']],
+            how='inner', on=['GeneID']
+            ).assign(
+                Scope = lambda x: np.where(
+                    x.xtype == 'trans', -1, 
+                    np.int8(np.log10(np.maximum(np.abs(x.dpos - (x.Start+x.End)/2) - (x.End-x.Start)/2, 0)+1))
+                )
+            ).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'Scope']).size().reset_index().rename(columns={0:'reads'})
         
-        self._data['RNA']['scope'] = dfscope
+        self._data['RNA.scope'] = dfscope
         
-        self._data['RNA']['exprs'] = dfscope.groupby(
+        self._data['RNA.exprs'] = dfscope.groupby(
             ['GeneID', 'Chrom', 'Start', 'End', 'Strand']
         )['reads'].sum().reset_index().assign(
             RPK = lambda x: x.reads/(x.End - x.Start)*1e3,
             TPM = lambda x: x.RPK/np.sum(x.RPK)*1e6
         ).sort_values(by='RPK', ascending=False)
 
+        return True
 
-        ### init count matrix of RNA-Bin
-        self._data['matrix'] = dfgmate.assign(
-            dbin = lambda x: np.int32(x.dpos // (self.bink*1000))
-        ).groupby(['GeneID', 'dchrom', 'dbin']).size().reset_index().rename(
-            columns={0:'reads', 'dchrom': 'Chrom', 'dbin': 'Bin'})
+
+    def evalmatrix(self):
+        '''
+            summarize RNA reads in gene-Bin wise
+        '''
+
+        self._data['matrix'] = pd.merge(
+            self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']], 
+            self._data['rmate'][['GeneID', 'dchrom', 'Bin']],
+            how='inner', on=['GeneID']
+            ).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'dchrom', 'Bin']).size().reset_index().rename(columns={0:'reads'})
+
+        return True
+
+
+    def evaluate(self):
+        self.evalmate()
+        self.evaldna()
+        self.evalrna()
+        self.evalmatrix()
 
         return True
 
     
     def tohdf5(self):
         with h5py.File(self.h5file, 'r+') as hf:
-            xa = np.fromiter(self._stats['counts'].items(), dtype=[('key', 'S20'), ('value', 'i4')])
-            del hf['/stats/counts']
-            hf.create_dataset('stats/counts', data=xa)
+            h5path = '/genome/stats'
 
-            if '/files' in hf:
-                del hf['/files']
-            hg = hf.create_group('files')
+            if h5path in hf: del hf[h5path]
+            hg = hf.create_group(h5path)
+            hg.create_dataset('bink', data=self.bink)
+            hg.create_dataset('winm', data=self.winm)
+            xa = np.fromiter(self._stats['counts'].items(), dtype=[('key', 'S20'), ('value', 'i4')])
+            hg.create_dataset('counts', data=xa)
+
+
+            h5path = '/genome/files'
+            if h5path in hf: del hf[h5path]
+            hg = hf.create_group(h5path)
             chrom = self.dfchrom.to_records(index=False).astype(
                 [('Chrom', 'S10'), ('Size', 'i4')]
             )
@@ -417,45 +427,46 @@ class GridGenome(object):
             )
             hg.create_dataset('gene', data=gene, compression='gzip')
 
-            if '/data' in hf:
-                del hf['/data']
-            hg = hf.create_group('data')
+
+            h5path = '/genome/data'
+            if h5path in hf: del hf[h5path]
+            hg = hf.create_group(h5path)
 
             rmate = self._data['rmate'].to_records(index=False).astype(
-                [('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'), 
-                ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1'), ('seqid', 'S100')]
+                [('seqid', 'S100'), 
+                ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
+                ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1'),
+                ('GeneID', 'S30'), ('Bin', 'i4'), ('xtype', 'S6')]
             )
             hg.create_dataset('rmate', data=rmate, compression='gzip')
 
             matrix = self._data['matrix'].to_records(index=False).astype(
-                [('GeneID', 'S30'), ('Chrom', 'S10'), ('Bin', 'i4'), ('reads', 'i4')]
+                [('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'),
+                ('dchrom', 'S10'), ('Bin', 'i4'), ('reads', 'i4')]
             )
             hg.create_dataset('matrix', data=matrix, compression='gzip')
 
-            gexpr = self._data['RNA']['exprs'].to_records(index=False).astype(
+            gexpr = self._data['RNA.exprs'].to_records(index=False).astype(
                 [('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'), 
                 ('reads', 'i4'), ('RPK', 'f4'), ('TPM', 'f4')]
             )
-            hg.create_dataset('RNA/exprs', data=gexpr, compression='gzip')
+            hg.create_dataset('RNA.exprs', data=gexpr, compression='gzip')
 
-            gscop = self._data['RNA']['scope'].to_records(index=False).astype(
+            gscop = self._data['RNA.scope'].to_records(index=False).astype(
                 [('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'), 
                 ('Scope', 'i1'), ('reads', 'i4')]
             )
-            hg.create_dataset('RNA/scope', data=gscop, compression='gzip')
+            hg.create_dataset('RNA.scope', data=gscop, compression='gzip')
 
-            dbins = self._data['DNA']['reads'].to_records(index=False).astype(
-                [('Chrom', 'S10'), ('Bin', 'i4'), ('BG', 'i4'), ('FG', 'i4')]
+            dbins = self._data['DNA.reads'].to_records(index=False).astype(
+                [('Chrom', 'S10'), ('Bin', 'i4'), ('cis', 'i4'), ('trans', 'i4')]
             )
-            hg.create_dataset('DNA/reads', data=dbins, compression='gzip')
-            hg.create_dataset('DNA/bink', data=self.bink)
-            hg.create_dataset('DNA/winm', data=self.winm)
+            hg.create_dataset('DNA.reads', data=dbins, compression='gzip')
 
         return True
 
 
-
-#  ----------------------------------- GridGenome ----------------------------------- 
+#  ----------------------------------- END of GridGenome ----------------------------------- 
 
 
 class GridInfo(object):
