@@ -92,7 +92,10 @@ class GridLinker(object):
 
     def tohdf5(self):
         with h5py.File(self.h5file, libver='latest') as hf:
-            hg = hf.create_group('/linker/stats')
+            h5path = '/linker/stats'
+
+            if h5path in hf: del hf[h5path]
+            hg = hf.create_group(h5path)
             for k in self._stats.keys():
                 if k == 'counts':
                     xa = np.fromiter(self._stats[k].items(), dtype=[('key', 'S20'), ('value', 'i4')])
@@ -488,32 +491,32 @@ class GridInfo(object):
     @property
     def bink(self):
         if not self._bink:
-            self._bink = np.int(self._fromhdf5('/data/DNA/bink'))
+            self._bink = np.int(self._fromhdf5('/genome/stats/bink'))
 
         return self._bink
 
     @property
     def winm(self):
         if not self._winm:
-            self._winm = np.int(self._fromhdf5('/data/DNA/winm'))
+            self._winm = np.int(self._fromhdf5('/genome/stats/winm'))
 
         return self._winm
 
     @property
     def dfgene(self):
         if 'dfgene' not in self._data:
-            self._data['dfgene'] = pd.DataFrame(self._fromhdf5('/files/gene'))
+            self._data['dfgene'] = pd.DataFrame(self._fromhdf5('/genome/files/gene'))
 
         return self._data['dfgene']
 
     @property
     def dfchrom(self):
         if 'dfchrom' not in self._data:
-            self._data['dfchrom'] = pd.DataFrame(self._fromhdf5('/files/chrom'))
+            self._data['dfchrom'] = pd.DataFrame(self._fromhdf5('/genome/files/chrom'))
 
         return self._data['dfchrom']
 
-    def filterChrom(self, pattern='chr([0-9]+|[XY])'):
+    def filterChrom(self, pattern='chr.+'):
         ptn = re.compile(pattern)
 
         chrs = [x for x in self.dfchrom.Chrom if ptn.search(str(x))]
@@ -547,7 +550,6 @@ class GridInfo(object):
         df = self.dfrmate[self.dfrmate['rchrom'] == self.dfrmate['dchrom']][['dchrom', 'dpos']]
         df.columns = ['Chrom', 'Pos']
         
-
         dfpcc = df.set_index('Chrom').groupby('Chrom').apply(
             lambda x: self._kpcc(x.Pos.values, kbins)
         ).reset_index()
@@ -558,7 +560,7 @@ class GridInfo(object):
     @property
     def dfrmate(self):
         if 'rmate' not in self._data:
-            df = pd.DataFrame(self._fromhdf5('/data/rmate'))
+            df = pd.DataFrame(self._fromhdf5('/genome/data/rmate'))
             df = df[df.rchrom.isin(self.dfchrom.Chrom) & df.dchrom.isin(self.dfchrom.Chrom)]
             self._data['rmate'] = df
 
@@ -568,7 +570,7 @@ class GridInfo(object):
     @property
     def dfRawMatrix(self):
         if 'rawmtx' not in self._data:
-            df = pd.DataFrame(self._fromhdf5('/data/matrix'))
+            df = pd.DataFrame(self._fromhdf5('/genome/data/matrix'))
             df = df[df.Chrom.isin(self.dfchrom.Chrom)]
             self._data['rawmtx'] = df
 
@@ -579,7 +581,7 @@ class GridInfo(object):
         if 'DNA' not in self._data:
             self._data['DNA'] = {}
         if 'reads' not in self._data['DNA']:
-            df = pd.DataFrame(self._fromhdf5('/data/DNA/reads'))
+            df = pd.DataFrame(self._fromhdf5('/genome/data/DNA.reads'))
             df = df[df.Chrom.isin(self.dfchrom.Chrom)]
             self._data['DNA']['reads'] = df
 
@@ -612,24 +614,20 @@ class GridInfo(object):
 
     @property
     def dfGeneExprs(self):
-        if 'RNA' not in self._data:
-            self._data['RNA'] = {}
-        if 'exprs' not in self._data['RNA']:
-            df = pd.DataFrame(self._fromhdf5('/data/RNA/exprs'))
-            dfd = self.dfRawMatrix.set_index('GeneID').groupby('GeneID')['reads'].max()/self.bink
-            df = pd.merge(df, dfd.reset_index().rename(columns={'reads': 'dRPK'}), on='GeneID')
-            self._data['RNA']['exprs'] = df
+        if 'RNA.exprs' not in self._data:
+            dfe = pd.DataFrame(self._fromhdf5('/genome/data/RNA.exprs'))
+            dfx = self.dfRawMatrix.set_index('GeneID').groupby('GeneID')['reads'].max()/self.bink
+            df = pd.merge(dfe, dfx.reset_index().rename(columns={'reads': 'dRPK'}), on='GeneID')
+            self._data['RNA.exprs'] = df
 
-        return self._data['RNA']['exprs']
+        return self._data['RNA.exprs']
 
     @property
     def dfGeneScope(self):
-        if 'RNA' not in self._data:
-            self._data['RNA'] = {}
-        if 'scope' not in self._data['RNA']:
-            self._data['RNA']['scope'] = pd.DataFrame(self._fromhdf5('/data/RNA/scope'))
+        if 'RNA.scope' not in self._data:
+            self._data['RNA.scope'] = pd.DataFrame(self._fromhdf5('/genome/data/RNA.scope'))
 
-        return self._data['RNA']['scope']
+        return self._data['RNA.scope']
 
 
     def v4c(self, geneid):
@@ -742,8 +740,9 @@ if __name__ == '__main__':
         grid = GridInfo(args.hdf5)
         grid.filterChrom()
 
-        dfexpr = grid.dfGeneExprs[['GeneID', 'reads', 'TPM', 'RPK', 'dRPK']]
-        dfexpr.GeneID = dfexpr.GeneID.values.astype('U30')
+        dfexpr = grid.dfGeneExprs[['GeneID', 'reads', 'TPM', 'RPK', 'dRPK']].assign(
+            GeneID = lambda df: df.GeneID.values.astype('U30')
+        )
 
         if args.exprs:
             dfexpr.to_csv(args.exprs, header=True, index=False, sep='\t', float_format='%.3f')
@@ -751,8 +750,10 @@ if __name__ == '__main__':
             print(dfexpr.to_csv(header=True, index=False, sep='\t', float_format='%.3f'))
         
         if args.scope:
-            dfscope = grid.dfGeneScope[['GeneID', 'Scope', 'reads']]
-            dfscope.GeneID = dfscope.GeneID.values.astype('U30')
+            dfscope = grid.dfGeneScope[['GeneID', 'Scope', 'reads']].assign(
+                GeneID = lambda df: df.GeneID.values.astype('U30')
+            )
+            
             dfscope.to_csv(args.scope, header=True, index=False, sep='\t', float_format='%.3f')
 
 
