@@ -293,21 +293,35 @@ class GridGenome(object):
 
 
     def _p_join_dfgene(self, dfx):
-        conn = sqlite3.connect(':memory:')
-        self.dfgene.to_sql('gene', conn, index=False, index_label=['Chrom', 'Start', 'End', 'Strand'])
-        dfx.to_sql('rmate', conn, index=False, index_label=['rchrom', 'rpos', 'rstrand', 'dchrom', 'dpos'])
+        ix, ig = np.where(
+            (
+                dfx.rchrom.values[:, None] == self.dfgene.Chrom.values
+            ) & (
+                dfx.rstrand.values[:, None] >= self.dfgene.Strand.values
+            ) & (
+                dfx.rpos.values[:, None] >= self.dfgene.Start.values
+            ) & (
+                dfx.rpos.values[:, None] <= self.dfgene.End.values
+            ) 
+        )
 
-        qstr = '''
-            SELECT 
-                seqid, rchrom, rpos, rstrand, dchrom, dpos, dstrand,
-                GeneID, CAST(dpos / {0}  as INTEGER) * {0} Bin,
-                CASE dchrom = rchrom WHEN 1 THEN 'cis' ELSE 'trans' END xtype
-            FROM rmate LEFT JOIN gene ON 
-                rchrom = Chrom and rstrand = Strand and rpos BETWEEN Start AND End
-        '''.format(self.bink*1000)
+        if len(ix) == 0:
+            dfy = dfx.assign(
+                GeneID = None, 
+                Bin = lambda v: v.dpos // (self.bink*1000) * 1000
+            )
+        else:
+            jx = ~np.isin(np.arange(len(dfx.index)), np.unique(ix))
+            dfy0 = dfx.iloc[jx,].assign(GeneID = None)
 
-        dfy = pd.read_sql_query(qstr, conn)
-        conn.close()
+            dfy1 = pd.concat([
+                dfx.iloc[ix,].reset_index(drop=True), 
+                self.dfgene.iloc[ig,].reset_index(drop=True)[['GeneID', ]]
+                ], axis=1)
+
+            dfy = pd.concat([dfy1, dfy0]).reset_index(drop=True).assign(
+                Bin = lambda v: v.dpos // (self.bink*1000) * 1000
+            )
 
         return dfy
 
@@ -326,7 +340,7 @@ class GridGenome(object):
                 ])
             )
 
-            dflist = np.array_split(dfrmate, os.cpu_count()*3, axis=0)
+            dflist = np.array_split(dfrmate, os.cpu_count()*11, axis=0)
 
             with ProcessPoolExecutor() as pool:
                 self._data['rmate'] = pd.concat(
@@ -341,7 +355,8 @@ class GridGenome(object):
             summarize DNA reads in genomic bins
         '''
 
-        df = self._data['rmate'][
+        df = self._data['rmate'].assign(
+            xtype = lambda v: np.where(v.rchrom == v.dchrom, 'cis', 'trans'))[
                 ['dchrom', 'Bin', 'xtype', 'GeneID']
             ].groupby(['dchrom', 'Bin', 'xtype']).count()['GeneID'].unstack('xtype', fill_value=0).reset_index().rename(
                 columns={'dchrom':'Chrom'}
@@ -361,11 +376,11 @@ class GridGenome(object):
 
         dfscope = pd.merge(
             self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']], 
-            self._data['rmate'][['GeneID', 'xtype', 'dpos']],
+            self._data['rmate'][['GeneID', 'dchrom', 'dpos']],
             how='inner', on=['GeneID']
             ).assign(
                 Scope = lambda x: np.where(
-                    x.xtype == 'trans', -1, 
+                    x.Chrom != x.dchrom, -1, 
                     np.int8(np.log10(np.maximum(np.abs(x.dpos - (x.Start+x.End)/2) - (x.End-x.Start)/2, 0)+1))
                 )
             ).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'Scope']).size().reset_index().rename(columns={0:'reads'})
@@ -391,7 +406,8 @@ class GridGenome(object):
             self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']], 
             self._data['rmate'][['GeneID', 'dchrom', 'Bin']],
             how='inner', on=['GeneID']
-            ).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'dchrom', 'Bin']).size().reset_index().rename(columns={0:'reads'})
+            ).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'dchrom', 'Bin']
+            ).size().reset_index().rename(columns={0:'reads'})
 
         return True
 
@@ -439,7 +455,7 @@ class GridGenome(object):
                 [('seqid', 'S100'), 
                 ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
                 ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1'),
-                ('GeneID', 'S30'), ('Bin', 'i4'), ('xtype', 'S6')]
+                ('GeneID', 'S30'), ('Bin', 'i4')]
             )
             hg.create_dataset('rmate', data=rmate, compression='gzip')
 
