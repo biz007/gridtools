@@ -326,7 +326,7 @@ class GridGenome(object):
                 ])
             )
 
-            dflist = np.array_split(dfrmate, os.cpu_count()*10, axis=0)
+            dflist = np.array_split(dfrmate, os.cpu_count()*1111, axis=0)
 
             with ProcessPoolExecutor() as pool:
                 self._data['rmate'] = pd.concat(
@@ -578,28 +578,26 @@ class GridInfo(object):
 
     @property
     def dfBinReads(self):
-        if 'DNA' not in self._data:
-            self._data['DNA'] = {}
-        if 'reads' not in self._data['DNA']:
+        if 'DNA.reads' not in self._data:
             df = pd.DataFrame(self._fromhdf5('/genome/data/DNA.reads'))
             df = df[df.Chrom.isin(self.dfchrom.Chrom)]
-            self._data['DNA']['reads'] = df
+            self._data['DNA.reads'] = df.rename(columns={'cis': 'FG', 'trans': 'BG'})
 
-        return self._data['DNA']['reads']
+        return self._data['DNA.reads']
 
     @property
     def dfBinValues(self):
-        if 'DNA' not in self._data:
-            self._data['DNA'] = {}
-        if 'values' not in self._data['DNA']:
+        if 'DNA.values' not in self._data:
             df = self.dfBinReads.set_index(['Chrom', 'Bin']).transform(
                 lambda x: x/np.sum(x)*1e6
             ).groupby(['Chrom'], sort=False).transform(
+                #TODO: evaluate performance for: 
+                #lambda x: (x.ewm(span=5).mean() + x[::-1].ewm(span=5).mean()[::-1])/2 
                 lambda x: np.log2(x.rolling(self.winm*10-1, center=True, min_periods=1).mean()+1)
             ).reset_index()
-            self._data['DNA']['values'] = df
+            self._data['DNA.values'] = df
 
-        return self._data['DNA']['values']
+        return self._data['DNA.values']
 
     def readsToValue(self, df):
         df = df.transform(
@@ -636,11 +634,12 @@ class GridInfo(object):
             self.dfRawMatrix[self.dfRawMatrix.GeneID == geneid][['Chrom', 'Bin', 'reads']],
             on=['Chrom', 'Bin'], how='left'
         ).set_index(['Chrom', 'Bin']).fillna(0)
-        df = self.readsToValue(df).sub(self.dfBinValues.set_index(['Chrom', 'Bin'])['BG'], axis='index').rename(
-            columns={'reads': 'V'}
-        ).transform(
+
+        dfbg = self.dfBinValues.set_index(['Chrom', 'Bin'])['BG']
+
+        df = self.readsToValue(df)['reads'].sub(dfbg, axis='index').transform(
             lambda x: np.where(x > 0, np.exp2(x), 0)
-        ).reset_index().assign(GeneID = geneid)
+        ).reset_index().rename(columns={0: 'V'}).assign(GeneID = geneid)
 
         return df[['GeneID', 'Chrom', 'Bin', 'V']]
 
@@ -650,6 +649,12 @@ class GridInfo(object):
 
         for g in gids:
             yield self.v4c(g)
+
+        # with ProcessPoolExecutor() as pool:
+        #     df = pd.concat(
+        #         pool.map(self.v4c, gids)
+        #     )
+        # return df
 
 
     def _fromhdf5(self, path):
@@ -667,7 +672,7 @@ if __name__ == '__main__':
     pargs = argparse.ArgumentParser(
         description='Tools for processing and evaluation of GRID-seq library.'
     )
-    pargs.add_argument('--version', action='version', version='Version: %(prog)s 1.1')
+    pargs.add_argument('--version', action='version', version='Version: %(prog)s 1.2')
     subpargs = pargs.add_subparsers(dest='cmd')
     
     pargs_mate = subpargs.add_parser('matefq', help='parse bamfile to RNA/DNA mate fastq.')
@@ -715,7 +720,6 @@ if __name__ == '__main__':
     pargs_stats.add_argument('-c', '--counts', action='store_true', help='if output the summary of mapping information in read counts.')
     pargs_stats.add_argument('-l', '--lengths', action='store_true', help='if output the distribution of sequence length for RNA, DNA and Linker.')
     pargs_stats.add_argument('-b', '--bases', action='store_true', help='if output the summary of base-position information for RNA, DNA and Linker.')
-    pargs_stats.add_argument('-q', '--qualities', action='store_true', help='if output the summary of quality-position information for RNA, DNA and Linker.')
     pargs_stats.add_argument('-r', '--resolution', action='store_true', help='if output the resolution information of the library.')
 
 
@@ -753,7 +757,7 @@ if __name__ == '__main__':
             dfscope = grid.dfGeneScope[['GeneID', 'Scope', 'reads']].assign(
                 GeneID = lambda df: df.GeneID.values.astype('U30')
             )
-            
+
             dfscope.to_csv(args.scope, header=True, index=False, sep='\t', float_format='%.3f')
 
 
@@ -761,8 +765,9 @@ if __name__ == '__main__':
         grid = GridInfo(args.hdf5)
         grid.filterChrom()
 
-        df = grid.dfBinValues
-        df.Chrom = df.Chrom.values.astype('U10')
+        df = grid.dfBinValues.assign(
+            Chrom = lambda df: df.Chrom.values.astype('U10')
+        )
    
         print(df.to_csv(header=True, index=False, sep='\t', float_format='%.3f'))
 
@@ -772,8 +777,11 @@ if __name__ == '__main__':
         grid.filterChrom()
 
         for df in grid.matrix(args.rpk, args.drpk):
-            df.GeneID = df.GeneID.values.astype('U30')
-            df.Chrom = df.Chrom.values.astype('U10')
+            df = df.assign(
+                GeneID = lambda df: df.GeneID.values.astype('U30'),
+                Chrom = lambda df: df.Chrom.values.astype('U10')
+            )
+
             print(df.to_csv(header=True, index=False, sep='\t', float_format='%.3f'))
 
 
@@ -839,28 +847,30 @@ if __name__ == '__main__':
         grid.filterChrom()
 
         with h5py.File(args.hdf5, 'r') as hf:
-            if args.bases:
-                df = pd.DataFrame(np.array(hf.get('stats/bases')))
-                df.columns = list('ACGTN')
-                df['base'] = df.index+1
-                df = df[['base', 'A', 'C', 'G', 'T', 'N']]
-                df.to_csv(args.prefix + '.bases.txt', header=True, index=False, sep='\t', float_format='%i')
             if args.counts:
-                df = pd.DataFrame(np.array(hf.get('stats/counts')))
-                df.key = df.key.values.astype('U20')
+                dfl = pd.DataFrame(np.array(hf.get('/linker/stats/counts')))
+                dfg = pd.DataFrame(np.array(hf.get('/genome/stats/counts')))
+
+                df = pd.concat([dfl, dfg]).assign(
+                    key = lambda df: df.key.values.astype('U20')
+                )
                 df.to_csv(args.prefix + '.counts.txt', header=False, index=False, sep='\t', float_format='%i')
+
+            if args.bases:
+                df = pd.DataFrame(np.array(hf.get('/linker/stats/bases')))
+                df.columns = list('ACGTN')
+                df['qual'] = np.array(hf.get('/linker/stats/quals'))
+                df['base'] = df.index+1
+                df = df[['base', 'A', 'C', 'G', 'T', 'N', 'qual']]
+                df.to_csv(args.prefix + '.bases.txt', header=True, index=False, sep='\t', float_format='%i')
+
             if args.lengths:
-                df = pd.DataFrame(np.array(hf.get('stats/sizes')))
+                df = pd.DataFrame(np.array(hf.get('/linker/stats/sizes')))
                 df.columns = ['RNA', 'linker', 'DNA']
                 df['length'] = df.index
                 df = df[['length', 'RNA', 'linker', 'DNA']]
                 df.to_csv(args.prefix + '.lengths.txt', header=True, index=False, sep='\t', float_format='%i')
-            if args.qualities:
-                quals = np.array(hf.get('stats/quals'))
-                df = pd.DataFrame({
-                    'base': np.arange(1, len(quals)+1),
-                    'qual': quals })
-                df.to_csv(args.prefix + '.quals.txt', header=True, index=False, sep='\t', float_format='%i')
+
             if args.resolution:
                 # kbins = [1,10,100,1000,10000]
                 kbins = [1, 2, 4, 6, 8, 10, 20, 40, 60, 80, 100, 1000]
