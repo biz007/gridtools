@@ -326,7 +326,7 @@ class GridGenome(object):
                 ])
             )
 
-            dflist = np.array_split(dfrmate, os.cpu_count()*1111, axis=0)
+            dflist = np.array_split(dfrmate, os.cpu_count()*3, axis=0)
 
             with ProcessPoolExecutor() as pool:
                 self._data['rmate'] = pd.concat(
@@ -526,7 +526,7 @@ class GridInfo(object):
     def _bpcc(self, data, bink, kfold):
         np.random.shuffle(data)
         xd = [
-            np.bincount(x // (bink*1000)) for x in np.array_split(data, kfold)[:kfold]
+            np.bincount(np.maximum(1, x // (bink*1000))) for x in np.array_split(data, kfold)[:kfold]
         ]
 
         n = min([len(x) for x in xd])
@@ -547,8 +547,9 @@ class GridInfo(object):
 
 
     def getResolution(self, kbins):
-        df = self.dfrmate[self.dfrmate['rchrom'] == self.dfrmate['dchrom']][['dchrom', 'dpos']]
-        df.columns = ['Chrom', 'Pos']
+        df = self.dfrmate[self.dfrmate.rchrom == self.dfrmate.dchrom][['dchrom', 'dpos']].rename(
+            columns={'dchrom':'Chrom', 'dpos':'Pos'}
+        )
         
         dfpcc = df.set_index('Chrom').groupby('Chrom').apply(
             lambda x: self._kpcc(x.Pos.values, kbins)
@@ -649,12 +650,6 @@ class GridInfo(object):
 
         for g in gids:
             yield self.v4c(g)
-
-        # with ProcessPoolExecutor() as pool:
-        #     df = pd.concat(
-        #         pool.map(self.v4c, gids)
-        #     )
-        # return df
 
 
     def _fromhdf5(self, path):
