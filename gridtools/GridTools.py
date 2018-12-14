@@ -13,6 +13,7 @@ import h5py
 import sqlite3
 
 from concurrent.futures import ProcessPoolExecutor
+from itertools import islice, chain
 
 
 
@@ -292,6 +293,14 @@ class GridGenome(object):
                                 yield (mread['rid'],) + mread['RNA'] + mread['DNA']
 
 
+    def iterchunk(self, x, n):
+        xlist = list(islice(x, n))
+
+        while xlist:
+            yield xlist
+            xlist = list(islice(x, n))
+
+
     def _p_join_dfgene(self, dfx):
         ix, ig = np.where(
             (
@@ -331,21 +340,25 @@ class GridGenome(object):
             store the read mate in dataframe
         '''
 
+        dfmlist = []
         if 'rmate' not in self._data:
-            dfrmate = pd.DataFrame(
-                np.array(list(self.itermate()), dtype=[
-                    ('seqid', 'S100'), 
-                    ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
-                    ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1')
-                ])
-            )
-
-            dflist = np.array_split(dfrmate, os.cpu_count()*11, axis=0)
-
-            with ProcessPoolExecutor() as pool:
-                self._data['rmate'] = pd.concat(
-                    pool.map(self._p_join_dfgene, dflist)
+            for mlist in self.iterchunk(self.itermate(), 1000000):
+                dfm = pd.DataFrame(
+                    np.array(list(mlist), dtype=[
+                        ('seqid', 'S100'), 
+                        ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
+                        ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1')
+                    ])
                 )
+                
+                dflist = np.array_split(dfm, os.cpu_count()*11, axis=0)
+
+                with ProcessPoolExecutor() as pool:
+                    dfmlist.append(
+                        pool.map(self._p_join_dfgene, dflist)
+                    )
+            
+            self._data['rmate'] = pd.concat(chain(*dfmlist), ignore_index=True)
 
         return True
 
