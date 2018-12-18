@@ -13,7 +13,7 @@ import h5py
 import sqlite3
 
 from concurrent.futures import ProcessPoolExecutor
-from itertools import islice, chain
+from itertools import islice, chain, starmap
 
 
 
@@ -363,16 +363,7 @@ class GridGenome(object):
         )).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'Scope']).size().reset_index().rename(columns={0:'reads'})
 
         return dfy
-
-
-    def _group_by_gexprs(self, dfx):
-        dfy = pd.merge(
-            self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']],
-            dfx.groupby(['GeneID']).size().reset_index().rename(columns={0:'reads'})
-        )
-
-        return dfy
-    
+ 
 
     def _group_by_genebins(self, dfx):
         dfy = pd.merge(
@@ -390,7 +381,7 @@ class GridGenome(object):
             store the read mate in dataframe
         '''
 
-        dfdna = []; dfmate = []; dfrscope = []; dfrexprs = []; dfgbmtx = []
+        dfdna = []; dfmate = []; dfrscope = []; dfgbmtx = []
         for mlist in self.iterchunk(self.itermate(), 1000000):
             df = pd.DataFrame(
                 np.array(list(mlist), dtype=[
@@ -407,17 +398,20 @@ class GridGenome(object):
 
                 dmlist = np.array_split(dfm, os.cpu_count()*3, axis=0)
                 dfrscope.append(pool.map(self._group_by_gscope, dmlist))
-                dfrexprs.append(pool.map(self._group_by_gexprs, dmlist))
                 dfgbmtx.append(pool.map(self._group_by_genebins, dmlist))
 
         dfmate = pd.concat(dfmate)
         dfdna = pd.concat(chain(*dfdna)).groupby(['dchrom', 'Bin', 'xtype'])['reads'].sum().reset_index()
         dfrscope = pd.concat(chain(*dfrscope)).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'Scope'])['reads'].sum().reset_index()
-        dfrexprs = pd.concat(chain(*dfrexprs)).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand'])['reads'].sum().reset_index().assign(
-            RPK = lambda x: x.reads/(x.End - x.Start)*1e3,
-            TPM = lambda x: x.RPK/np.sum(x.RPK)*1e6
-        ).sort_values(by='RPK', ascending=False)
         dfgbmtx = pd.concat(chain(*dfgbmtx)).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'dchrom', 'Bin'])['reads'].sum().reset_index()
+
+        dfrexprs = dfgbmtx.groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand'])['reads'].agg(['sum', 'max']).rename(
+            columns={'sum':'reads', 'max':'dreads'}
+        ).reset_index().assign(
+            RPK = lambda x: x.reads/(x.End - x.Start)*1e3,
+            TPM = lambda x: x.RPK/np.sum(x.RPK)*1e6,
+            dRPK = lambda x: x.dreads/self.bink
+        ).sort_values(by='RPK', ascending=False).drop(columns=['dreads'])
         
 
         with h5py.File(self.h5file, libver='latest') as hf:
@@ -441,7 +435,7 @@ class GridGenome(object):
             hfg.create_dataset('data/RNA.exprs', compression='lzf', 
                 data = dfrexprs.to_records(index=False).astype(
                     [('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'), 
-                    ('reads', 'i4'), ('RPK', 'f4'), ('TPM', 'f4')]
+                    ('reads', 'i4'), ('RPK', 'f4'), ('TPM', 'f4'), ('dRPK', 'f4')]
                 )
             )
 
@@ -467,6 +461,8 @@ class GridGenome(object):
 
             xa = np.fromiter(self._stats['counts'].items(), dtype=[('key', 'S20'), ('value', 'i4')])
             hfg.create_dataset('stats/counts', data=xa)
+            hfg.create_dataset('stats/bink', data=self.bink)
+            hfg.create_dataset('stats/winm', data=self.winm)
 
             hfg.create_dataset('files/chrom', compression='lzf', 
                 data = self.dfchrom.to_records(index=False).astype(
@@ -483,10 +479,20 @@ class GridGenome(object):
 class GridInfo(object):
     def __init__(self, h5file):
         self.h5file = h5file
-        self._bink = None
-        self._winm = None
-        self._stats = {}
         self._data = {}
+
+        with h5py.File(self.h5file, 'r') as hf:
+            self._bink = np.array(hf['/genome/stats/bink'])
+            self._winm = np.array(hf['/genome/stats/winm'])
+            self._dfchrom = pd.DataFrame(
+                np.array(hf['/genome/files/chrom'])
+            )
+
+        chrs = [x for x in self._dfchrom.Chrom.values if re.search('[cC]hr[^CM].*', str(x))]
+        self._dfchrom = self._dfchrom.assign(
+            main = lambda x: x.Chrom.isin(chrs)
+        )
+
 
     @property
     def h5file(self):
@@ -498,37 +504,15 @@ class GridInfo(object):
 
     @property
     def bink(self):
-        if not self._bink:
-            self._bink = np.int(self._fromhdf5('/genome/stats/bink'))
-
         return self._bink
 
     @property
     def winm(self):
-        if not self._winm:
-            self._winm = np.int(self._fromhdf5('/genome/stats/winm'))
-
         return self._winm
 
     @property
-    def dfgene(self):
-        if 'dfgene' not in self._data:
-            self._data['dfgene'] = pd.DataFrame(self._fromhdf5('/genome/files/gene'))
-
-        return self._data['dfgene']
-
-    @property
     def dfchrom(self):
-        if 'dfchrom' not in self._data:
-            self._data['dfchrom'] = pd.DataFrame(self._fromhdf5('/genome/files/chrom'))
-
-        return self._data['dfchrom']
-
-    def filterChrom(self, pattern='chr.+'):
-        ptn = re.compile(pattern)
-
-        chrs = [x for x in self.dfchrom.Chrom if ptn.search(str(x))]
-        self._data['dfchrom'] = self.dfchrom[self.dfchrom.Chrom.isin(chrs)]
+        return self._dfchrom
 
 
     def _bpcc(self, data, bink, kfold):
@@ -555,7 +539,10 @@ class GridInfo(object):
 
 
     def getResolution(self, kbins):
-        df = self.dfrmate[self.dfrmate.rchrom == self.dfrmate.dchrom][['dchrom', 'dpos']].rename(
+        with h5py.File(self.h5file, 'r') as hf:
+            df = pd.DataFrame(np.array(hf['/genome/data/RNA.exprs']))
+
+        df = df[df.rchrom == df.dchrom][['dchrom', 'dpos']].rename(
             columns={'dchrom':'Chrom', 'dpos':'Pos'}
         )
         
@@ -567,32 +554,29 @@ class GridInfo(object):
 
 
     @property
-    def dfrmate(self):
-        if 'rmate' not in self._data:
-            df = pd.DataFrame(self._fromhdf5('/genome/data/rmate'))
-            df = df[df.rchrom.isin(self.dfchrom.Chrom) & df.dchrom.isin(self.dfchrom.Chrom)]
-            self._data['rmate'] = df
-
-        return self._data['rmate']
-
-
-    @property
-    def dfRawMatrix(self):
-        if 'rawmtx' not in self._data:
-            df = pd.DataFrame(self._fromhdf5('/genome/data/matrix'))
-            df = df[df.Chrom.isin(self.dfchrom.Chrom)]
-            self._data['rawmtx'] = df
-
-        return self._data['rawmtx']
-
-    @property
     def dfBinReads(self):
         if 'DNA.reads' not in self._data:
-            df = pd.DataFrame(self._fromhdf5('/genome/data/DNA.reads'))
-            df = df[df.Chrom.isin(self.dfchrom.Chrom)]
-            self._data['DNA.reads'] = df.rename(columns={'cis': 'FG', 'trans': 'BG'})
+            df = self.dfchrom[self.dfchrom.main].assign(
+                nBin = lambda x: x.Size.values // (self.bink*1000) + 1
+            )[['Chrom', 'nBin']]
+
+            df = pd.DataFrame({
+                'Chrom': np.repeat(df.Chrom.values, df.nBin.values),
+                'Bin': np.concatenate([np.arange(n)*1000 for n in df.nBin.values])
+            })
+
+            with h5py.File(self.h5file, 'r') as hf:
+                dfdna = pd.DataFrame(np.array(hf['/genome/data/DNA.reads']))
+
+            df = pd.merge(
+                df, dfdna.set_index(['Chrom', 'Bin', 'xtype'])['reads'].unstack('xtype', fill_value=0).reset_index(),
+                how='left', on=['Chrom', 'Bin']
+            ).rename(columns={b'cis':'FG', b'trans':'BG'})
+
+            self._data['DNA.reads'] = df
 
         return self._data['DNA.reads']
+
 
     @property
     def dfBinValues(self):
@@ -608,6 +592,7 @@ class GridInfo(object):
 
         return self._data['DNA.values']
 
+
     def readsToValue(self, df):
         df = df.transform(
             lambda x: np.where(x.rolling(self.winm*2-1, center=True, min_periods=1).sum()>=0.3*self.winm, x, 0)
@@ -619,28 +604,40 @@ class GridInfo(object):
 
         return df
 
+
     @property
     def dfGeneExprs(self):
         if 'RNA.exprs' not in self._data:
-            dfe = pd.DataFrame(self._fromhdf5('/genome/data/RNA.exprs'))
-            dfx = self.dfRawMatrix.set_index('GeneID').groupby('GeneID')['reads'].max()/self.bink
-            df = pd.merge(dfe, dfx.reset_index().rename(columns={'reads': 'dRPK'}), on='GeneID')
-            self._data['RNA.exprs'] = df
+            with h5py.File(self.h5file, 'r') as hf:
+                self._data['RNA.exprs']=pd.DataFrame(np.array(hf['/genome/data/RNA.exprs']))
 
         return self._data['RNA.exprs']
+
 
     @property
     def dfGeneScope(self):
         if 'RNA.scope' not in self._data:
-            self._data['RNA.scope'] = pd.DataFrame(self._fromhdf5('/genome/data/RNA.scope'))
-
+            with h5py.File(self.h5file, 'r') as hf:
+                self._data['RNA.scope']=pd.DataFrame(np.array(hf['/genome/data/RNA.scope']))
+        
         return self._data['RNA.scope']
+
+
+    @property
+    def dfMatrix(self):
+        if 'rawmtx' not in self._data:
+            with h5py.File(self.h5file, 'r') as hf:
+                df=pd.DataFrame(np.array(hf['/genome/data/matrix']))
+                
+            self._data['rawmtx'] = df[df.Chrom.isin(self.dfchrom.Chrom[self.dfchrom.main])]
+
+        return self._data['rawmtx']
 
 
     def v4c(self, geneid):
         df = pd.merge(
             self.dfBinValues[['Chrom', 'Bin']],
-            self.dfRawMatrix[self.dfRawMatrix.GeneID == geneid][['Chrom', 'Bin', 'reads']],
+            self.dfMatrix[self.dfMatrix.GeneID == geneid][['Chrom', 'Bin', 'reads']],
             on=['Chrom', 'Bin'], how='left'
         ).set_index(['Chrom', 'Bin']).fillna(0)
 
@@ -660,10 +657,35 @@ class GridInfo(object):
             yield self.v4c(g)
 
 
-    def _fromhdf5(self, path):
-        with h5py.File(self.h5file, 'r') as hf:
-            return np.array(hf.get(path))
-                
+    def iterchunk(self, x, n):
+        xlist = list(islice(x, n))
+
+        while xlist:
+            yield xlist
+            xlist = list(islice(x, n))
+
+
+    def model(self, bedfile, grpk=100, drpk=10):
+        dfbed = pd.read_csv(bedfile, sep='\t', header=None, 
+            usecols=[0,1,2,3], names=['Chrom', 'Start', 'End', 'EType']).assign(
+                EID = lambda x: x.Chrom.str.cat([map(str, x.Start), map(str, x.End)], sep=':')
+            )
+        dfbed.Chrom = dfbed.Chrom.values.astype('S10')
+        dfbed.Start = np.int32(np.floor(dfbed.Start.values / (grid.bink*1000))) * 1000
+        dfbed.End = np.int32(np.ceil(dfbed.End.values / (grid.bink*1000))) * 1000
+
+        for xlist in self.iterchunk(self.matrix(grpk, drpk), 1000):
+
+            with ProcessPoolExecutor() as pool:
+                dfdna.append(pool.map(self._group_by_bins, xlist))
+
+            #TODO
+
+
+
+
+
+        return None
 #  ----------------------------------- GridInfo ----------------------------------- 
 
 
@@ -744,28 +766,22 @@ if __name__ == '__main__':
 
     elif args.cmd == 'RNA':
         grid = GridInfo(args.hdf5)
-        grid.filterChrom()
-
-        dfexpr = grid.dfGeneExprs[['GeneID', 'reads', 'TPM', 'RPK', 'dRPK']].assign(
-            GeneID = lambda df: df.GeneID.values.astype('U30')
-        )
 
         if args.exprs:
+            dfexpr = grid.dfGeneExprs[['GeneID', 'reads', 'TPM', 'RPK', 'dRPK']].assign(
+                GeneID = lambda df: df.GeneID.values.astype('U30')
+            )
             dfexpr.to_csv(args.exprs, header=True, index=False, sep='\t', float_format='%.3f')
-        else:
-            print(dfexpr.to_csv(header=True, index=False, sep='\t', float_format='%.3f'))
         
         if args.scope:
             dfscope = grid.dfGeneScope[['GeneID', 'Scope', 'reads']].assign(
                 GeneID = lambda df: df.GeneID.values.astype('U30')
             )
-
             dfscope.to_csv(args.scope, header=True, index=False, sep='\t', float_format='%.3f')
 
 
     elif args.cmd == 'DNA':
         grid = GridInfo(args.hdf5)
-        grid.filterChrom()
 
         df = grid.dfBinValues.assign(
             Chrom = lambda df: df.Chrom.values.astype('U10')
@@ -776,7 +792,6 @@ if __name__ == '__main__':
 
     elif args.cmd == 'matrix':
         grid = GridInfo(args.hdf5)
-        grid.filterChrom()
 
         for df in grid.matrix(args.rpk, args.drpk):
             df = df.assign(
@@ -789,21 +804,16 @@ if __name__ == '__main__':
 
     elif args.cmd == 'model':
         grid = GridInfo(args.hdf5)
-        grid.filterChrom()
-        binsize = grid.bink*1e3
-        
+
         conn = sqlite3.connect(':memory:')
 
-        grid.dfgene.to_sql('gene', conn, index=False, index_label=['GeneID', 'Chrom'])
-
-        dfbed = pd.read_csv(args.elebed, sep='\t', header=None, 
-            usecols=[0,1,2,3], names=['Chrom', 'Start', 'End', 'EType']).assign(
-                EID = lambda x: x.Chrom.str.cat([map(str, x.Start), map(str, x.End)], sep=':')
-            )
-        dfbed.Chrom = dfbed.Chrom.values.astype('S10')
-        dfbed.Start = np.int32(np.floor(dfbed.Start.values / binsize))
-        dfbed.End = np.int32(np.ceil(dfbed.End.values / binsize))
-
+        # dfbed = pd.read_csv(args.elebed, sep='\t', header=None, 
+        #     usecols=[0,1,2,3], names=['Chrom', 'Start', 'End', 'EType']).assign(
+        #         EID = lambda x: x.Chrom.str.cat([map(str, x.Start), map(str, x.End)], sep=':')
+        #     )
+        # dfbed.Chrom = dfbed.Chrom.values.astype('S10')
+        # dfbed.Start = np.int32(np.floor(dfbed.Start.values / (grid.bink*1000))) * 1000
+        # dfbed.End = np.int32(np.ceil(dfbed.End.values / (grid.bink*1000))) * 1000
         
         dfbed.to_sql('bed', conn, index=False, index_label=['Chrom', 'Start', 'End'])
 
