@@ -280,20 +280,6 @@ class GridGenome(object):
         return self._data['dfgene']
 
 
-    @property
-    def dfbinid(self):
-        if 'dfbinid' not in self._data:
-            chrbins = self.dfchrom['Size'] // (self.bink*1000) + 1
-            xs = np.repeat(self.dfchrom['Chrom'], chrbins)
-            xr = np.concatenate([np.arange(n) for n in chrbins])
-            df = pd.DataFrame({'Chrom': xs, 'Bin': xr})
-            df.Bin = df.Bin * self.bink*1000
-            
-            self._data['dfbinid'] = df
-        
-        return self._data['dfbinid']
-
-
     def itermate(self):
         self._stats['counts'] = {'mates.paired':0, 'mates.mapped':0, 'mates.unique':0, 'mates.dups':0}
 
@@ -339,6 +325,17 @@ class GridGenome(object):
             xlist = list(islice(x, n))
 
 
+    def _group_by_bins(self, dfx):
+        df = dfx.assign(
+            Bin = lambda df: df.dpos // (self.bink*1000) * 1000,
+            xtype = lambda x: np.where(x.dchrom == x.rchrom, b'cis', b'trans')
+        ).groupby(['dchrom', 'Bin', 'xtype']).size().reset_index().rename(
+            columns={0:'reads'}
+        )
+
+        return df
+
+
     def _join_by_range(self, dfx):
         with sqlite3.connect(':memory:') as conn:
             self.dfgene.to_sql('gene', conn, index=False, index_label=['Chrom', 'Start', 'End', 'Strand'])
@@ -355,13 +352,45 @@ class GridGenome(object):
 
         return dfy
 
+    
+    def _group_by_gscope(self, dfx):
+        dfy = pd.merge(
+            self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']],
+            dfx[['GeneID', 'dchrom', 'dpos']], how='inner', on=['GeneID']
+        ).assign(
+            Scope = lambda x: np.where(x.Chrom != x.dchrom, -1, 
+            np.int8(np.log10(np.maximum(np.abs(x.dpos - (x.Start+x.End)/2) - (x.End-x.Start)/2, 0)+1))
+        )).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'Scope']).size().reset_index().rename(columns={0:'reads'})
 
-    def evalmate(self):
+        return dfy
+
+
+    def _group_by_gexprs(self, dfx):
+        dfy = pd.merge(
+            self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']],
+            dfx.groupby(['GeneID']).size().reset_index().rename(columns={0:'reads'})
+        )
+
+        return dfy
+    
+
+    def _group_by_genebins(self, dfx):
+        dfy = pd.merge(
+            self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']],
+            dfx.assign(
+                Bin = lambda df: df.dpos // (self.bink*1000) * 1000
+            ).groupby(['GeneID', 'dchrom', 'Bin']).size().reset_index().rename(columns={0:'reads'})
+        )
+
+        return dfy
+
+
+    def evaluate(self):
         '''
             store the read mate in dataframe
         '''
 
-        dsmate = []
+        dfdna = []; dfmate = []; dfrscope = []; dfrexprs = []; dfgbmtx = []
         for mlist in self.iterchunk(self.itermate(), 1000000):
             df = pd.DataFrame(
                 np.array(list(mlist), dtype=[
@@ -370,143 +399,81 @@ class GridGenome(object):
                 ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1')])
             )
 
-            dflist = np.array_split(pd.DataFrame(df), os.cpu_count()*3, axis=0)
+            dflist = np.array_split(df, os.cpu_count()*3, axis=0)
             with ProcessPoolExecutor() as pool:
-                dsmate.append(pool.map(self._join_by_range, dflist))
+                dfdna.append(pool.map(self._group_by_bins, dflist))
+                dfm = pd.concat(pool.map(self._join_by_range, dflist))
+                dfmate.append(dfm)
+
+                dmlist = np.array_split(dfm, os.cpu_count()*3, axis=0)
+                dfrscope.append(pool.map(self._group_by_gscope, dmlist))
+                dfrexprs.append(pool.map(self._group_by_gexprs, dmlist))
+                dfgbmtx.append(pool.map(self._group_by_genebins, dmlist))
+
+        dfmate = pd.concat(dfmate)
+        dfdna = pd.concat(chain(*dfdna)).groupby(['dchrom', 'Bin', 'xtype'])['reads'].sum().reset_index()
+        dfrscope = pd.concat(chain(*dfrscope)).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'Scope'])['reads'].sum().reset_index()
+        dfrexprs = pd.concat(chain(*dfrexprs)).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand'])['reads'].sum().reset_index().assign(
+            RPK = lambda x: x.reads/(x.End - x.Start)*1e3,
+            TPM = lambda x: x.RPK/np.sum(x.RPK)*1e6
+        ).sort_values(by='RPK', ascending=False)
+        dfgbmtx = pd.concat(chain(*dfgbmtx)).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'dchrom', 'Bin'])['reads'].sum().reset_index()
         
-        dsmate = pd.concat(chain(*dsmate)).to_records(index=False).astype(
-            [
-                ('seqid', 'S100'), 
-                ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
-                ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1'),
-                ('GeneID', 'S30')
-            ]
-        )
 
         with h5py.File(self.h5file, libver='latest') as hf:
             h5path = '/genome'
             if h5path in hf: del hf[h5path]
             hfg = hf.create_group(h5path)
 
-            hfg.create_dataset('data/rmate', compression='gzip', data = dsmate )
-                    
-        return True
-
-
-    def evaldna(self):
-        '''
-            summarize DNA reads in genomic bins
-        '''
-
-        df = self._data['rmate'].assign(
-            xtype = lambda v: np.where(v.rchrom == v.dchrom, 'cis', 'trans'))[
-                ['dchrom', 'Bin', 'xtype', 'GeneID']
-            ].groupby(['dchrom', 'Bin', 'xtype']).count()['GeneID'].unstack('xtype', fill_value=0).reset_index().rename(
-                columns={'dchrom':'Chrom'}
-            )
-        
-        df = pd.merge(self.dfbinid, df, how='left', on=['Chrom', 'Bin']).fillna(0)
-
-        self._data['DNA.reads'] = df
-
-        return True
-
-
-    def evalrna(self):
-        '''
-            summarize RNA reads in genes
-        '''
-
-        dfscope = pd.merge(
-            self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']], 
-            self._data['rmate'][['GeneID', 'dchrom', 'dpos']],
-            how='inner', on=['GeneID']
-            ).assign(
-                Scope = lambda x: np.where(
-                    x.Chrom != x.dchrom, -1, 
-                    np.int8(np.log10(np.maximum(np.abs(x.dpos - (x.Start+x.End)/2) - (x.End-x.Start)/2, 0)+1))
+            hfg.create_dataset('data/DNA.reads', compression='lzf', 
+                data = dfdna.to_records(index=False).astype(
+                    [('Chrom', 'S10'), ('Bin', 'i4'), ('xtype', 'S5'), ('reads', 'i4')]
                 )
-            ).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'Scope']).size().reset_index().rename(columns={0:'reads'})
-        
-        self._data['RNA.scope'] = dfscope
-        
-        self._data['RNA.exprs'] = dfscope.groupby(
-            ['GeneID', 'Chrom', 'Start', 'End', 'Strand']
-        )['reads'].sum().reset_index().assign(
-            RPK = lambda x: x.reads/(x.End - x.Start)*1e3,
-            TPM = lambda x: x.RPK/np.sum(x.RPK)*1e6
-        ).sort_values(by='RPK', ascending=False)
+            )
 
-        return True
+            hfg.create_dataset('data/RNA.scope', compression='lzf', 
+                data = dfrscope.to_records(index=False).astype(
+                    [('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'), 
+                    ('Scope', 'i1'), ('reads', 'i4')]
+                )
+            )
 
+            hfg.create_dataset('data/RNA.exprs', compression='lzf', 
+                data = dfrexprs.to_records(index=False).astype(
+                    [('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'), 
+                    ('reads', 'i4'), ('RPK', 'f4'), ('TPM', 'f4')]
+                )
+            )
 
-    def evalmatrix(self):
-        '''
-            summarize RNA reads in gene-Bin wise
-        '''
+            hfg.create_dataset('data/rmate', compression='lzf', 
+                data = dfmate.to_records(index=False).astype(
+                    [
+                        ('seqid', 'S100'), 
+                        ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
+                        ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1'),
+                        ('GeneID', 'S30')
+                    ]
+                )
+            )
 
-        self._data['matrix'] = pd.merge(
-            self.dfgene[['GeneID', 'Chrom', 'Start', 'End', 'Strand']], 
-            self._data['rmate'][['GeneID', 'dchrom', 'Bin']],
-            how='inner', on=['GeneID']
-            ).groupby(['GeneID', 'Chrom', 'Start', 'End', 'Strand', 'dchrom', 'Bin']
-            ).size().reset_index().rename(columns={0:'reads'})
-
-        return True
-
-
-    def evaluate(self):
-        self.evalmate()
-        # self.evaldna()
-        # self.evalrna()
-        # self.evalmatrix()
-
-        return True
-
-    
-    def tohdf5(self):
-        with h5py.File(self.h5file, libver='latest') as hf:
-            h5path = '/genome/stats'
+            hfg.create_dataset('data/matrix', compression='lzf', 
+                data = dfgbmtx.to_records(index=False).astype(
+                    [
+                        ('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'),
+                        ('dchrom', 'S10'), ('Bin', 'i4'), ('reads', 'i4')
+                    ]
+                )
+            )
 
             xa = np.fromiter(self._stats['counts'].items(), dtype=[('key', 'S20'), ('value', 'i4')])
-            hg.create_dataset('counts', data=xa)
+            hfg.create_dataset('stats/counts', data=xa)
 
-
-            h5path = '/genome/data'
-            if h5path in hf: del hf[h5path]
-            hg = hf.create_group(h5path)
-
-            rmate = self._data['rmate'].to_records(index=False).astype(
-                [('seqid', 'S100'), 
-                ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
-                ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1'),
-                ('GeneID', 'S30'), ('Bin', 'i4')]
+            hfg.create_dataset('files/chrom', compression='lzf', 
+                data = self.dfchrom.to_records(index=False).astype(
+                    [('Chrom', 'S10'), ('Size', 'i4')]
+                )
             )
-            hg.create_dataset('rmate', data=rmate, compression='gzip')
-
-            matrix = self._data['matrix'].to_records(index=False).astype(
-                [('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'),
-                ('dchrom', 'S10'), ('Bin', 'i4'), ('reads', 'i4')]
-            )
-            hg.create_dataset('matrix', data=matrix, compression='gzip')
-
-            gexpr = self._data['RNA.exprs'].to_records(index=False).astype(
-                [('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'), 
-                ('reads', 'i4'), ('RPK', 'f4'), ('TPM', 'f4')]
-            )
-            hg.create_dataset('RNA.exprs', data=gexpr, compression='gzip')
-
-            gscop = self._data['RNA.scope'].to_records(index=False).astype(
-                [('GeneID', 'S30'), ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'), 
-                ('Scope', 'i1'), ('reads', 'i4')]
-            )
-            hg.create_dataset('RNA.scope', data=gscop, compression='gzip')
-
-            dbins = self._data['DNA.reads'].to_records(index=False).astype(
-                [('Chrom', 'S10'), ('Bin', 'i4'), ('cis', 'i4'), ('trans', 'i4')]
-            )
-            hg.create_dataset('DNA.reads', data=dbins, compression='gzip')
-
+                    
         return True
 
 
