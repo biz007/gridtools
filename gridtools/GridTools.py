@@ -165,13 +165,48 @@ class GridGenome(object):
         self.h5file = h5file
         self.bink = bink
         self.winm = winm
-        self.gtf = gtf
+        self.gtffile = gtf
         self._stats = {}
         self._data = {}
 
         ## init files
         self.dfgene
         self.dfchrom
+
+        # with h5py.File(self.h5file, libver='latest') as hf:
+        #     h5path = '/genome'
+        #     if h5path in hf: del hf[h5path]
+        #     hfg = hf.create_group(h5path)
+        #     hfg.create_dataset('stats/bink', data=self.bink)
+        #     hfg.create_dataset('stats/winm', data=self.winm)
+
+        #     with pysam.AlignmentFile(self.bamfile, 'rb') as bam:                            # pylint: disable=maybe-no-member
+        #         ds = pd.DataFrame({
+        #             'Chrom': [x.encode('ascii') for x in bam.references],
+        #             'Size': bam.lengths
+        #         }).to_records(index=False).astype(
+        #             [('Chrom', 'S10'), ('Size', 'i4')]
+        #         )
+                
+        #         hfg.create_dataset('files/chrom', data=ds, compression='gzip')
+
+            # with pysam.TabixFile(self.gtffile) as tbx:                                      # pylint: disable=maybe-no-member
+            #     glist = []
+            #     for gtf in tbx.fetch(parser=pysam.asGTF()):                                 # pylint: disable=maybe-no-member
+            #         if gtf.feature == 'gene':
+            #             grow =  (gtf.contig, gtf.start, gtf.end, gtf.strand, gtf.gene_id)
+            #             glist.append(grow)
+                
+            #     ds = np.array(glist, dtype=[
+            #             ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), 
+            #             ('Strand', 'S1'), ('GeneID', 'S30')
+            #             ]
+            #         )
+
+            #     hfg.create_dataset('files/gene', data=ds, compression='gzip')
+
+            # hf.swmr_mode = True
+            # assert hf.swmr_mode
 
 
     @property
@@ -207,29 +242,13 @@ class GridGenome(object):
         self._winm = m
 
     @property
-    def gtf(self):
-        return self._gtf
+    def gtffile(self):
+        return self._gtffile
 
-    @gtf.setter
-    def gtf(self, fn):
-        self._gtf = fn
+    @gtffile.setter
+    def gtffile(self, fn):
+        self._gtffile = fn
 
-    @property
-    def dfgene(self):
-        if 'dfgene' not in self._data:
-            xgene = {}
-            with pysam.TabixFile(self.gtf) as tbx:                                      # pylint: disable=maybe-no-member
-                for gtf in tbx.fetch(parser=pysam.asGTF()):                             # pylint: disable=maybe-no-member
-                    if gtf.feature == 'gene':
-                        xgene[gtf.gene_id] = (gtf.contig, gtf.start, gtf.end, gtf.strand, gtf.gene_id)
-            self._data['dfgene'] = pd.DataFrame(
-                np.array(list(xgene.values()), dtype=[
-                    ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), 
-                    ('Strand', 'S1'), ('GeneID', 'S30')]
-                )
-            )
-
-        return self._data['dfgene']
 
     @property
     def dfchrom(self):
@@ -241,6 +260,25 @@ class GridGenome(object):
                 })
 
         return self._data['dfchrom']
+
+
+    @property
+    def dfgene(self):
+        if 'dfgene' not in self._data:
+            xgene = {}
+            with pysam.TabixFile(self.gtffile) as tbx:                                      # pylint: disable=maybe-no-member
+                for gtf in tbx.fetch(parser=pysam.asGTF()):                                 # pylint: disable=maybe-no-member
+                    if gtf.feature == 'gene':
+                        xgene[gtf.gene_id] = (gtf.contig, gtf.start, gtf.end, gtf.strand, gtf.gene_id)
+            self._data['dfgene'] = pd.DataFrame(
+                np.array(list(xgene.values()), dtype=[
+                    ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), 
+                    ('Strand', 'S1'), ('GeneID', 'S30')]
+                )
+            )
+
+        return self._data['dfgene']
+
 
     @property
     def dfbinid(self):
@@ -259,7 +297,7 @@ class GridGenome(object):
     def itermate(self):
         self._stats['counts'] = {'mates.paired':0, 'mates.mapped':0, 'mates.unique':0, 'mates.dups':0}
 
-        with pysam.AlignmentFile(self.bamfile, 'rb', threads=os.cpu_count()) as bam:                            # pylint: disable=maybe-no-member
+        with pysam.AlignmentFile(self.bamfile, 'rb') as bam:                            # pylint: disable=maybe-no-member
             if bam.header['HD']['SO'] != 'queryname':
                 raise IOError('The input bam file is not sorted by read name.')
 
@@ -301,36 +339,19 @@ class GridGenome(object):
             xlist = list(islice(x, n))
 
 
-    def _p_join_dfgene(self, dfx):
-        ix, ig = np.where(
-            (
-                dfx.rchrom.values[:, None] == self.dfgene.Chrom.values
-            ) & (
-                dfx.rstrand.values[:, None] >= self.dfgene.Strand.values
-            ) & (
-                dfx.rpos.values[:, None] >= self.dfgene.Start.values
-            ) & (
-                dfx.rpos.values[:, None] <= self.dfgene.End.values
-            ) 
-        )
+    def _join_by_range(self, dfx):
+        with sqlite3.connect(':memory:') as conn:
+            self.dfgene.to_sql('gene', conn, index=False, index_label=['Chrom', 'Start', 'End', 'Strand'])
+            dfx.to_sql('rmate', conn, index=False, index_label=['rchrom', 'rpos', 'rstrand', 'dchrom', 'dpos'])
 
-        if len(ix) == 0:
-            dfy = dfx.assign(
-                GeneID = None, 
-                Bin = lambda v: v.dpos // (self.bink*1000) * 1000
-            )
-        else:
-            jx = ~np.isin(np.arange(len(dfx.index)), np.unique(ix))
-            dfy0 = dfx.iloc[jx,].assign(GeneID = None)
+            qstr = '''
+                SELECT 
+                    seqid, rchrom, rpos, rstrand, dchrom, dpos, dstrand, GeneID
+                FROM rmate LEFT JOIN gene ON 
+                    rchrom = Chrom and rstrand = Strand and rpos BETWEEN Start AND End
+            '''
 
-            dfy1 = pd.concat([
-                dfx.iloc[ix,].reset_index(drop=True), 
-                self.dfgene.iloc[ig,].reset_index(drop=True)[['GeneID', ]]
-                ], axis=1)
-
-            dfy = pd.concat([dfy1, dfy0]).reset_index(drop=True).assign(
-                Bin = lambda v: v.dpos // (self.bink*1000) * 1000
-            )
+            dfy = pd.read_sql_query(qstr, conn)
 
         return dfy
 
@@ -340,26 +361,35 @@ class GridGenome(object):
             store the read mate in dataframe
         '''
 
-        dfmlist = []
-        if 'rmate' not in self._data:
-            for mlist in self.iterchunk(self.itermate(), 1000000):
-                dfm = pd.DataFrame(
-                    np.array(list(mlist), dtype=[
-                        ('seqid', 'S100'), 
-                        ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
-                        ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1')
-                    ])
-                )
-                
-                dflist = np.array_split(dfm, os.cpu_count()*11, axis=0)
+        dsmate = []
+        for mlist in self.iterchunk(self.itermate(), 1000000):
+            df = pd.DataFrame(
+                np.array(list(mlist), dtype=[
+                ('seqid', 'S50'), 
+                ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
+                ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1')])
+            )
 
-                with ProcessPoolExecutor() as pool:
-                    dfmlist.append(
-                        pool.map(self._p_join_dfgene, dflist)
-                    )
-            
-            self._data['rmate'] = pd.concat(chain(*dfmlist), ignore_index=True)
+            dflist = np.array_split(pd.DataFrame(df), os.cpu_count()*3, axis=0)
+            with ProcessPoolExecutor() as pool:
+                dsmate.append(pool.map(self._join_by_range, dflist))
+        
+        dsmate = pd.concat(chain(*dsmate)).to_records(index=False).astype(
+            [
+                ('seqid', 'S100'), 
+                ('rchrom', 'S10'), ('rpos', 'i4'), ('rstrand', 'S1'),
+                ('dchrom', 'S10'), ('dpos', 'i4'), ('dstrand', 'S1'),
+                ('GeneID', 'S30')
+            ]
+        )
 
+        with h5py.File(self.h5file, libver='latest') as hf:
+            h5path = '/genome'
+            if h5path in hf: del hf[h5path]
+            hfg = hf.create_group(h5path)
+
+            hfg.create_dataset('data/rmate', compression='gzip', data = dsmate )
+                    
         return True
 
 
@@ -427,9 +457,9 @@ class GridGenome(object):
 
     def evaluate(self):
         self.evalmate()
-        self.evaldna()
-        self.evalrna()
-        self.evalmatrix()
+        # self.evaldna()
+        # self.evalrna()
+        # self.evalmatrix()
 
         return True
 
@@ -438,26 +468,8 @@ class GridGenome(object):
         with h5py.File(self.h5file, libver='latest') as hf:
             h5path = '/genome/stats'
 
-            if h5path in hf: del hf[h5path]
-            hg = hf.create_group(h5path)
-            hg.create_dataset('bink', data=self.bink)
-            hg.create_dataset('winm', data=self.winm)
             xa = np.fromiter(self._stats['counts'].items(), dtype=[('key', 'S20'), ('value', 'i4')])
             hg.create_dataset('counts', data=xa)
-
-
-            h5path = '/genome/files'
-            if h5path in hf: del hf[h5path]
-            hg = hf.create_group(h5path)
-            chrom = self.dfchrom.to_records(index=False).astype(
-                [('Chrom', 'S10'), ('Size', 'i4')]
-            )
-            hg.create_dataset('chrom', data=chrom, compression='gzip')
-            
-            gene = self.dfgene.to_records(index=False).astype(
-                [('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'), ('GeneID', 'S30')]
-            )
-            hg.create_dataset('gene', data=gene, compression='gzip')
 
 
             h5path = '/genome/data'
@@ -761,7 +773,6 @@ if __name__ == '__main__':
     elif args.cmd == 'evaluate':
         grid = GridGenome(args.bam, args.hdf5, args.bink, args.winm, args.gtf)
         grid.evaluate()
-        grid.tohdf5()
 
 
     elif args.cmd == 'RNA':
