@@ -173,41 +173,6 @@ class GridGenome(object):
         self.dfgene
         self.dfchrom
 
-        # with h5py.File(self.h5file, libver='latest') as hf:
-        #     h5path = '/genome'
-        #     if h5path in hf: del hf[h5path]
-        #     hfg = hf.create_group(h5path)
-        #     hfg.create_dataset('stats/bink', data=self.bink)
-        #     hfg.create_dataset('stats/winm', data=self.winm)
-
-        #     with pysam.AlignmentFile(self.bamfile, 'rb') as bam:                            # pylint: disable=maybe-no-member
-        #         ds = pd.DataFrame({
-        #             'Chrom': [x.encode('ascii') for x in bam.references],
-        #             'Size': bam.lengths
-        #         }).to_records(index=False).astype(
-        #             [('Chrom', 'S10'), ('Size', 'i4')]
-        #         )
-                
-        #         hfg.create_dataset('files/chrom', data=ds, compression='gzip')
-
-            # with pysam.TabixFile(self.gtffile) as tbx:                                      # pylint: disable=maybe-no-member
-            #     glist = []
-            #     for gtf in tbx.fetch(parser=pysam.asGTF()):                                 # pylint: disable=maybe-no-member
-            #         if gtf.feature == 'gene':
-            #             grow =  (gtf.contig, gtf.start, gtf.end, gtf.strand, gtf.gene_id)
-            #             glist.append(grow)
-                
-            #     ds = np.array(glist, dtype=[
-            #             ('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), 
-            #             ('Strand', 'S1'), ('GeneID', 'S30')
-            #             ]
-            #         )
-
-            #     hfg.create_dataset('files/gene', data=ds, compression='gzip')
-
-            # hf.swmr_mode = True
-            # assert hf.swmr_mode
-
 
     @property
     def bamfile(self):
@@ -469,6 +434,12 @@ class GridGenome(object):
                     [('Chrom', 'S10'), ('Size', 'i4')]
                 )
             )
+
+            hfg.create_dataset('files/gene', compression='lzf', 
+                data = self.dfgene.to_records(index=False).astype(
+                    [('Chrom', 'S10'), ('Start', 'i4'), ('End', 'i4'), ('Strand', 'S1'), ('GeneID', 'S30')]
+                )
+            )
                     
         return True
 
@@ -486,6 +457,9 @@ class GridInfo(object):
             self._winm = np.array(hf['/genome/stats/winm'])
             self._dfchrom = pd.DataFrame(
                 np.array(hf['/genome/files/chrom'])
+            )
+            self._dfgene = pd.DataFrame(
+                np.array(hf['/genome/files/gene'])
             )
 
         chrs = [x for x in self._dfchrom.Chrom.values if re.search('[cC]hr[^CM].*', str(x))]
@@ -513,6 +487,10 @@ class GridInfo(object):
     @property
     def dfchrom(self):
         return self._dfchrom
+    
+    @property
+    def dfgene(self):
+        return self._dfgene
 
 
     def _bpcc(self, data, bink, kfold):
@@ -540,7 +518,7 @@ class GridInfo(object):
 
     def getResolution(self, kbins):
         with h5py.File(self.h5file, 'r') as hf:
-            df = pd.DataFrame(np.array(hf['/genome/data/RNA.exprs']))
+            df = pd.DataFrame(np.array(hf['/genome/data/rmate']))
 
         df = df[df.rchrom == df.dchrom][['dchrom', 'dpos']].rename(
             columns={'dchrom':'Chrom', 'dpos':'Pos'}
@@ -675,28 +653,83 @@ class GridInfo(object):
         yield mlist
 
 
-    def model(self, bedfile, grpk=100, drpk=10):
-        dfbed = pd.read_csv(bedfile, sep='\t', header=None, 
-            usecols=[0,1,2,3], names=['Chrom', 'Start', 'End', 'EType']).assign(
+    @property
+    def ebedfile(self):
+        return self._ebedfile
+
+    @ebedfile.setter
+    def ebedfile(self, bedfile):
+        self._ebedfile = bedfile
+
+
+    @property
+    def dfebed(self):
+        if 'dfebed' not in self._data:
+            df = pd.read_csv(self.ebedfile, sep='\t', header=None, 
+                usecols=[0,1,2], names=['Chrom', 'Start', 'End']
+            ).assign(
                 EID = lambda x: x.Chrom.str.cat([map(str, x.Start), map(str, x.End)], sep=':')
             )
-        dfbed.Chrom = dfbed.Chrom.values.astype('S10')
-        dfbed.Start = np.int32(np.floor(dfbed.Start.values / (grid.bink*1000))) * 1000
-        dfbed.End = np.int32(np.ceil(dfbed.End.values / (grid.bink*1000))) * 1000
+            df.Chrom = df.Chrom.values.astype('S10')
+            df.EID = df.EID.values.astype('S20')
 
-        for xlist in self.iterchunk(self.matrix(grpk, drpk), 1000):
+            self._data['dfebed'] = df
+        return self._data['dfebed']
 
+
+    def _join_by_range(self, dfx):
+        with sqlite3.connect(':memory:') as conn:
+            self.dfebed.to_sql('ebed', conn, index=False, index_label=['Chrom', 'Start', 'End'])
+            dfg = self.dfgene.rename(columns={'Chrom':'gChrom'})[['GeneID', 'gChrom']]
+
+            dfx = pd.merge(
+                dfx, dfg, on=['GeneID']
+            ).assign(
+                XType = lambda x: np.where(x.Chrom == x.gChrom, b'cis', b'trans')
+            ).drop(columns=['gChrom'])
+
+            dfx.to_sql('mtx', conn, index=False, index_label=['GeneID', 'Chrom', 'Bin', 'xtype'])
+            
+            qstr = '''
+                SELECT 
+                    GeneID, EID, XType, SUM(V) V
+                FROM 
+                    mtx JOIN ebed ON mtx.Chrom = ebed.Chrom AND 
+                    Bin BETWEEN Start AND End
+                GROUP BY
+                    GeneID, EID, XType
+                ORDER BY
+                    XType
+            '''
+
+            dfy = pd.read_sql_query(qstr, conn)
+            
+            if len(dfy) < 1:
+                return None
+            
+            dfy = dfy.assign(
+                G = lambda x: np.log10(x.V)-np.log10(np.sum(x.V))
+            ).assign(
+                Z = lambda x: (x.G - x.G[x.XType == b'trans'].mean())/x.G[x.XType == b'trans'].std()
+            )
+
+        return dfy
+
+
+    def model(self, grpk=100, drpk=10):
+        gids = self.hitGeneID(grpk, drpk)
+
+        dfmod = []
+        for mlist in self.iterMatrix(gids, zerobin=False, chunks=os.cpu_count()*2):
             with ProcessPoolExecutor() as pool:
-                dfdna.append(pool.map(self._group_by_bins, xlist))
+                dfmod.append(pool.map(self._join_by_range, mlist))
+        
+        dfmod = pd.concat(chain(*dfmod))
 
-            #TODO
+        return dfmod
 
 
-
-
-
-        return None
-#  ----------------------------------- GridInfo ----------------------------------- 
+#  ----------------------------------- END of GridInfo ----------------------------------- 
 
 
 
@@ -816,54 +849,17 @@ if __name__ == '__main__':
 
     elif args.cmd == 'model':
         grid = GridInfo(args.hdf5)
+        grid.ebedfile = args.elebed
 
-        # conn = sqlite3.connect(':memory:')
+        df = grid.model(args.rpk, args.drpk)
+        df.GeneID = df.GeneID.values.astype('U30')
+        df.EID = df.EID.values.astype('U50')
+        df.XType = df.XType.values.astype('U5')
 
-        # dfbed = pd.read_csv(args.elebed, sep='\t', header=None, 
-        #     usecols=[0,1,2,3], names=['Chrom', 'Start', 'End', 'EType']).assign(
-        #         EID = lambda x: x.Chrom.str.cat([map(str, x.Start), map(str, x.End)], sep=':')
-        #     )
-        # dfbed.Chrom = dfbed.Chrom.values.astype('S10')
-        # dfbed.Start = np.int32(np.floor(dfbed.Start.values / (grid.bink*1000))) * 1000
-        # dfbed.End = np.int32(np.ceil(dfbed.End.values / (grid.bink*1000))) * 1000
-        
-        # dfbed.to_sql('bed', conn, index=False, index_label=['Chrom', 'Start', 'End'])
+        df = df[df.Z >= args.zscore]
 
-        # qstr = '''
-        #     SELECT 
-        #         U.GeneID GeneID, EID, EType,
-        #         CASE U.Chrom = gene.Chrom WHEN 1 THEN 'cis' ELSE 'trans' END XType,
-        #         S, V
-        #     FROM (
-        #         SELECT 
-        #             GeneID, mtx.Chrom Chrom, EID, EType, S, SUM(V) V
-        #         FROM
-        #             mtx JOIN bed ON mtx.Chrom = bed.Chrom AND 
-        #             mtx.Bin BETWEEN bed.Start AND bed.END
-        #         GROUP BY
-        #             GeneID, mtx.Chrom, EID, EType, S
-        #     ) U JOIN gene ON U.GeneID = gene.GeneID 
-        # '''
-
-        # for dfmat in grid.matrix(args.rpk, args.drpk):
-        #     dfmat = dfmat[dfmat.V>0]
-        #     dfmat['S'] = np.sum(dfmat.V.values)
-        #     dfmat.to_sql('mtx', conn, index=False, index_label=['GeneID', 'Chrom', 'Bin'], if_exists='append')
-
-        # df = pd.read_sql_query(qstr, conn)
-        # conn.close()
-        
-        # df = df.assign(
-        #     G = lambda x: np.log10(x.V)-np.log10(x.S)
-        # ).assign(
-        #     Z = lambda x: (x.G - x.G[x.XType == 'trans'].mean())/x.G[x.XType == 'trans'].std()
-        # )
-
-        # df = df[df.Z >= args.zscore]
-        # df.GeneID = df.GeneID.values.astype('U30')
-
-        # print(df.to_csv(header=True, index=False, sep='\t', float_format='%.3f', 
-        #     columns=['GeneID', 'EID', 'EType', 'XType', 'G', 'Z']))
+        print(df.to_csv(header=True, index=False, sep='\t', float_format='%.3f', 
+            columns=['GeneID', 'EID', 'XType', 'G', 'Z']))
 
 
     elif args.cmd == 'stats':
