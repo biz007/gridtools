@@ -4,7 +4,6 @@ GRID-seq workflow in Nat. Protocol
 import os
 
 # Setting of genome
-# cd ~; git clone gridtools;
 base = os.path.join(os.environ["HOME"], "gridtools/pipeline")
 genomeDir = os.path.join(base, "genome") # Genome and annotation
 dataDir = os.path.join(base, "data")     # Experimental raw data

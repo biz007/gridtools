@@ -1,35 +1,38 @@
 # Pipeline to analyze test data
 
-1. Download genome and gene annotation
-
-    + genome as Fasta
+1. Download the *GridTools* and make it available
 ```
-    mkdir -p genome
-    rsync -avzP rsync://hgdownload.cse.ucsc.edu/goldenPath/mm10/bigZips/chromFa.tar.gz genome/mm10chromFa.tar.gz
-    mkdir -p genome/mm10chromFa; tar -xvf genome/mm10chromFa.tar.gz -C genome/mm10chromFa;
-```
-    + genome chrom sizes as csv file
-```
-    rsync -avzP rsync://hgdownload.cse.ucsc.edu/goldenPath/mm10/bigZips/mm10.chrom.sizes genome/
+    git clone https://github.com/biz007/gridtools.git
+    cp gridtools/gridtools/GridTools.py ~/bin/GridTools.py
+    cd gridtools/pipeline/
 ```
 
-    + gene annotation as GTF file
+2. Download genome and gene annotation
 ```
-    Export GTF of Gencode Basic VM18 gene track from UCSC Table Browser
-    saved as genome/wgEncodeGencodeBasicVM18.gtf.gz
-```
-
-2. Download test GRID-seq data
-```
-    mkdir -p data
-    wget http://fugenome.ucsd.edu/gridseq/datasets/gridseq.test10M.raw.fq.gz
-    saved in data/gridseq.test10M.raw.fq.gz
-    cd data; ln -s gridseq.test10M.raw.fq.gz test.fq.gz
+    mkdir genome && cd genome
+    wget -v ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M19/GRCm38.primary_assembly.genome.fa.gz
+    wget -v ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M19/gencode.vM19.annotation.gtf.gz
+    cd ..
 ```
 
-3. Run Snakemake
+3. Download the GRID-seq test data
 ```
-    cd pipeline; mkdir -p bin; cp ../gridtools/GridTools.py bin/
+    mkdir data && cd data
+    wget -v http://fugenome.ucsd.edu/gridseq/datasets/gridseq.test10M.raw.fq.gz
+    ln -s gridseq.test10M.raw.fq.gz test.fq.gz
+    cd ..
+```
+
+4. Setup *conda* environment and install required packages
+```
+    conda create -n grid python=3.6
+    source activate grid
+    conda install -c bioconda bwa samtools cutadapt numpy scipy h5py pandas pysam
+    conda install snakemake
+```
+
+5. Run the pipeline
+```
     source activate grid
     snakemake -s Snakefile.py -np # Check
 ```
