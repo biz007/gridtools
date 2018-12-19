@@ -628,16 +628,17 @@ class GridInfo(object):
         if 'rawmtx' not in self._data:
             with h5py.File(self.h5file, 'r') as hf:
                 df=pd.DataFrame(np.array(hf['/genome/data/matrix']))
-                
-            self._data['rawmtx'] = df[df.Chrom.isin(self.dfchrom.Chrom[self.dfchrom.main])]
+            
+            mainchroms = self.dfchrom.Chrom[self.dfchrom.main].values
+            self._data['rawmtx'] = df[df.dchrom.isin(mainchroms)]
 
         return self._data['rawmtx']
 
 
-    def v4c(self, geneid):
+    def v4c(self, geneid, zerobin=True):
         df = pd.merge(
             self.dfBinValues[['Chrom', 'Bin']],
-            self.dfMatrix[self.dfMatrix.GeneID == geneid][['Chrom', 'Bin', 'reads']],
+            self.dfMatrix[self.dfMatrix.GeneID == geneid][['dchrom', 'Bin', 'reads']].rename(columns={'dchrom':'Chrom'}),
             on=['Chrom', 'Bin'], how='left'
         ).set_index(['Chrom', 'Bin']).fillna(0)
 
@@ -647,22 +648,31 @@ class GridInfo(object):
             lambda x: np.where(x > 0, np.exp2(x), 0)
         ).reset_index().rename(columns={0: 'V'}).assign(GeneID = geneid)
 
-        return df[['GeneID', 'Chrom', 'Bin', 'V']]
+        df = df[['GeneID', 'Chrom', 'Bin', 'V']]
+        if not zerobin:
+            df = df[df.V > 0]
+
+        return df
+
+
+    def hitGeneID(self, grpk=100, drpk=10):
+        gids = self.dfGeneExprs[
+            (self.dfGeneExprs.RPK >= grpk) & (self.dfGeneExprs.dRPK >= drpk)
+            ]['GeneID'].values
+
+        return gids
 
     
-    def matrix(self, grpk=100, drpk=10):
-        gids = self.dfGeneExprs[(self.dfGeneExprs.RPK >= grpk) & (self.dfGeneExprs.dRPK >= drpk)]['GeneID'].values
-
-        for g in gids:
-            yield self.v4c(g)
-
-
-    def iterchunk(self, x, n):
-        xlist = list(islice(x, n))
-
-        while xlist:
-            yield xlist
-            xlist = list(islice(x, n))
+    def iterMatrix(self, geneids, zerobin=True, chunks=1):
+        mlist = []; i = 0
+        for g in geneids:
+            i += 1
+            if i % chunks:
+                mlist.append(self.v4c(g, zerobin))
+            else:
+                yield mlist
+                mlist = []
+        yield mlist
 
 
     def model(self, bedfile, grpk=100, drpk=10):
@@ -793,8 +803,10 @@ if __name__ == '__main__':
     elif args.cmd == 'matrix':
         grid = GridInfo(args.hdf5)
 
-        for df in grid.matrix(args.rpk, args.drpk):
-            df = df.assign(
+        gids = grid.hitGeneID(args.rpk, args.drpk)
+
+        for df in grid.iterMatrix(gids, chunks=10):
+            df = pd.concat(df).assign(
                 GeneID = lambda df: df.GeneID.values.astype('U30'),
                 Chrom = lambda df: df.Chrom.values.astype('U10')
             )
@@ -805,7 +817,7 @@ if __name__ == '__main__':
     elif args.cmd == 'model':
         grid = GridInfo(args.hdf5)
 
-        conn = sqlite3.connect(':memory:')
+        # conn = sqlite3.connect(':memory:')
 
         # dfbed = pd.read_csv(args.elebed, sep='\t', header=None, 
         #     usecols=[0,1,2,3], names=['Chrom', 'Start', 'End', 'EType']).assign(
@@ -815,48 +827,47 @@ if __name__ == '__main__':
         # dfbed.Start = np.int32(np.floor(dfbed.Start.values / (grid.bink*1000))) * 1000
         # dfbed.End = np.int32(np.ceil(dfbed.End.values / (grid.bink*1000))) * 1000
         
-        dfbed.to_sql('bed', conn, index=False, index_label=['Chrom', 'Start', 'End'])
+        # dfbed.to_sql('bed', conn, index=False, index_label=['Chrom', 'Start', 'End'])
 
-        qstr = '''
-            SELECT 
-                U.GeneID GeneID, EID, EType,
-                CASE U.Chrom = gene.Chrom WHEN 1 THEN 'cis' ELSE 'trans' END XType,
-                S, V
-            FROM (
-                SELECT 
-                    GeneID, mtx.Chrom Chrom, EID, EType, S, SUM(V) V
-                FROM
-                    mtx JOIN bed ON mtx.Chrom = bed.Chrom AND 
-                    mtx.Bin BETWEEN bed.Start AND bed.END
-                GROUP BY
-                    GeneID, mtx.Chrom, EID, EType, S
-            ) U JOIN gene ON U.GeneID = gene.GeneID 
-        '''
+        # qstr = '''
+        #     SELECT 
+        #         U.GeneID GeneID, EID, EType,
+        #         CASE U.Chrom = gene.Chrom WHEN 1 THEN 'cis' ELSE 'trans' END XType,
+        #         S, V
+        #     FROM (
+        #         SELECT 
+        #             GeneID, mtx.Chrom Chrom, EID, EType, S, SUM(V) V
+        #         FROM
+        #             mtx JOIN bed ON mtx.Chrom = bed.Chrom AND 
+        #             mtx.Bin BETWEEN bed.Start AND bed.END
+        #         GROUP BY
+        #             GeneID, mtx.Chrom, EID, EType, S
+        #     ) U JOIN gene ON U.GeneID = gene.GeneID 
+        # '''
 
-        for dfmat in grid.matrix(args.rpk, args.drpk):
-            dfmat = dfmat[dfmat.V>0]
-            dfmat['S'] = np.sum(dfmat.V.values)
-            dfmat.to_sql('mtx', conn, index=False, index_label=['GeneID', 'Chrom', 'Bin'], if_exists='append')
+        # for dfmat in grid.matrix(args.rpk, args.drpk):
+        #     dfmat = dfmat[dfmat.V>0]
+        #     dfmat['S'] = np.sum(dfmat.V.values)
+        #     dfmat.to_sql('mtx', conn, index=False, index_label=['GeneID', 'Chrom', 'Bin'], if_exists='append')
 
-        df = pd.read_sql_query(qstr, conn)
-        conn.close()
+        # df = pd.read_sql_query(qstr, conn)
+        # conn.close()
         
-        df = df.assign(
-            G = lambda x: np.log10(x.V)-np.log10(x.S)
-        ).assign(
-            Z = lambda x: (x.G - x.G[x.XType == 'trans'].mean())/x.G[x.XType == 'trans'].std()
-        )
+        # df = df.assign(
+        #     G = lambda x: np.log10(x.V)-np.log10(x.S)
+        # ).assign(
+        #     Z = lambda x: (x.G - x.G[x.XType == 'trans'].mean())/x.G[x.XType == 'trans'].std()
+        # )
 
-        df = df[df.Z >= args.zscore]
-        df.GeneID = df.GeneID.values.astype('U30')
+        # df = df[df.Z >= args.zscore]
+        # df.GeneID = df.GeneID.values.astype('U30')
 
-        print(df.to_csv(header=True, index=False, sep='\t', float_format='%.3f', 
-            columns=['GeneID', 'EID', 'EType', 'XType', 'G', 'Z']))
+        # print(df.to_csv(header=True, index=False, sep='\t', float_format='%.3f', 
+        #     columns=['GeneID', 'EID', 'EType', 'XType', 'G', 'Z']))
 
 
     elif args.cmd == 'stats':
         grid = GridInfo(args.hdf5)
-        grid.filterChrom()
 
         with h5py.File(args.hdf5, 'r') as hf:
             if args.counts:
