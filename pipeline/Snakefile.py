@@ -21,8 +21,19 @@ samples = ["test", ]
 
 rule all:
     input:
-        expand(os.path.join(dataDir, "{sample}.fq.gz"), sample=samples)
-      
+        expand(os.path.join(outDir, "{sample}.trimed.fq.gz"), sample=samples),
+        gridIdx + ".bwt",
+        expand(os.path.join(outDir, "mapped/{sample}.GRIDv1.bam"), sample=samples),
+        genomeIdx + ".bwt",
+        expand(os.path.join(outDir, "{sample}.mate.fq.gz"), sample=samples),
+        expand(os.path.join(outDir, "mapped/{sample}.mate.mrk.bam"), sample=samples),
+        os.path.join(outDir, "mm10.gtf.gz")
+        expand(os.path.join(os.path.join(outDir, "hdf/{sample}.bak.h5"), sample=samples),
+        expand(os.path.join(outDir, "qcStats/{sample}.stats.counts.txt"), sample=samples),
+        expand(os.path.join(outDir, "RNA/{sample}.gene_exprs.txt"), sample=samples),
+        expand(os.path.join(outDir, "DNA/{sample}.dna.txt.gz"), sample=samples),
+        expand(os.path.join(outDir, "matrix/{sample}.matrix.gz"), sample=samples),
+        
 
 rule trim:
     """Step 153: Trim empty bases and the adapter sequences"""
@@ -55,8 +66,8 @@ rule align_linker:
         fq = os.path.join(outDir, "{sample}.trimed.fq.gz"),
         linkeridx = gridIdx + ".bwt"
     output:
-        bam = os.path.join(outDir, "mapped/{sample}.bam"),
-        bai = os.path.join(outDir, "mapped/{sample}.bam.bai")
+        bam = os.path.join(outDir, "mapped/{sample}.GRIDv1.bam"),
+        bai = os.path.join(outDir, "mapped/{sample}.GRIDv1.bam.bai")
     params:
         linkeridx = gridIdx
     threads: os.cpu_count()
@@ -70,8 +81,8 @@ rule align_linker:
 rule separate_RNA_DNA:
     """Step 156: """
     input:
-        bam = os.path.join(outDir, "mapped/{sample}.bam"),
-        bai = os.path.join(outDir, "mapped/{sample}.bam.bai")
+        bam = os.path.join(outDir, "mapped/{sample}.GRIDv1.bam"),
+        bai = os.path.join(outDir, "mapped/{sample}.GRIDv1.bam.bai")
     output:
         h5 = os.path.join(outDir, "hdf/{sample}.h5"),
         mate = os.path.join(outDir, "{sample}.mate.fq.gz")
@@ -137,13 +148,14 @@ rule QC_alignment:
         h5 = os.path.join(outDir, "hdf/{sample}.h5"),
         mbam = os.path.join(outDir, "mapped/{sample}.mate.mrk.bam")
     output:
-        h5 = os.path.join(outDir, "hdf/{sample}.h5") # update the hdf5 file
+        h5 = os.path.join(outDir, "hdf/{sample}.bak.h5") # update the hdf5 file
     params:
         bink = 10, # kilobase size of bin
         winm = 10  # number of moving windows
     shell:
         """
-        GridTools.py evaluate -k {params.bink} -m {params.winm} -g {input.gtf} -o {output.h5} {input.mbam}
+        cp {input.h5} {output.h5}
+        GridTools.py evaluate -k {params.bink} -m {params.winm} -g {input.gtf} -o {input.h5} {input.mbam}
         """
 
 rule QC_stats:
@@ -155,8 +167,8 @@ rule QC_stats:
         count = os.path.join(outDir, "qcStats/{sample}.stats.counts.txt"),
         length = os.path.join(outDir, "qcStats/{sample}.stats.lengths.txt"),
         resolution = os.path.join(outDir, "qcStats/{sample}.stats.resolution.txt")
-    param:
-        prefix = os.path.join(outDir, "qcStats/{sample}.stats"),
+    params:
+        prefix = os.path.join(outDir, "qcStats/{sample}.stats")
     shell:
         """
         GridTools.py stats -bclr -p {params.prefix} {input.h5}
