@@ -32,7 +32,7 @@ rule all:
         expand(os.path.join(outDir, "qcStats/{sample}.stats.counts.txt"), sample=samples),
         expand(os.path.join(outDir, "RNA/{sample}.gene_exprs.txt"), sample=samples),
         expand(os.path.join(outDir, "DNA/{sample}.dna.txt.gz"), sample=samples),
-        expand(os.path.join(outDir, "matrix/{sample}.matrix.gz"), sample=samples),
+        expand(os.path.join(outDir, "matrix/{sample}.matrix.gz"), sample=samples)
         
 
 rule trim:
