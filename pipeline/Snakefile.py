@@ -27,7 +27,7 @@ rule all:
         genomeIdx + ".bwt",
         expand(os.path.join(outDir, "{sample}.mate.fq.gz"), sample=samples),
         expand(os.path.join(outDir, "mapped/{sample}.mate.mrk.bam"), sample=samples),
-        os.path.join(outDir, "mm10.gtf.gz")
+        os.path.join(outDir, "mm10.gtf.gz"),
         expand(os.path.join(os.path.join(outDir, "hdf/{sample}.bak.h5"), sample=samples),
         expand(os.path.join(outDir, "qcStats/{sample}.stats.counts.txt"), sample=samples),
         expand(os.path.join(outDir, "RNA/{sample}.gene_exprs.txt"), sample=samples),
