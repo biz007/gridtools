@@ -8,7 +8,7 @@ def readme():
 
 setup(
     name = 'GridTools',
-    version = '1.0',
+    version = '1.2',
     description = 'GRID-seq Analysis Toolkit',
     long_description = readme(),
     classifiers=[
@@ -24,7 +24,7 @@ setup(
       license='MIT',
       packages=['gridseq'],
       install_requires=[
-          'markdown', 'numpy', 'pandas', 'pysam', 'h5py', 'sqlite3'
+          'markdown', 'numpy', 'pandas', 'pysam', 'h5py'
       ],
       test_suite='nose.collector',
       tests_require=['nose', 'nose-cover3'],
