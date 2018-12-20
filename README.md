@@ -88,7 +88,7 @@ arguments|option|description
 
 ## stats
 ```
-GridTools.py stats [-h] -p PREFIX [-c] [-l] [-b] [-q] [-r] hdf5
+GridTools.py stats [-h] -p PREFIX [-b] [-c] [-l] [-r] hdf5
 ```
 statistics of GRID-seq data.
 
@@ -96,10 +96,9 @@ arguments|option|description
 ---|---|---
 `hdf5`|required|*HDF5* file with mapping information evaluated by *GridTools*.
 `-p/--prefix PREFIX`|required|prefix of output file names.
+`-b/--bases`|optional|if output the summary of base-position information for RNA, Linker and DNA [default: No].
 `-c/--counts`|optional|if output the summary of mapping information in read counts [default: No].
 `-l/--lengths`|optional|if output the distribution of sequence length for RNA, Linker and DNA [default: No].
-`-b/--bases`|optional|if output the summary of base-position information for RNA, Linker and DNA [default: No].
-`-q/--qualities`|optional|if output the summary of quality-position information for RNA, DNA and Linker [default: No].
 `-r/--resolution`|optional|if output the resolution information of the library [default: No].
 
 
@@ -112,8 +111,8 @@ cacluate the RNA-chromatin interation matrix.
 arguments|option|description
 ---|---|---
 `hdf5`|required|*HDF5* file with mapping information evaluated by *GridTools*.
-`-k/--rpk RPK`|optional|RPK of RNA reads from gene. [default: 100]
-`-x/--drpk DRPK`|optional|maximun RPK of interaction peak by gene [default: 10].
+`-k/--rpk RPK`|optional|cutoff of RNA reads per kilobase in the gene body. [default: 100]
+`-x/--drpk DRPK`|optional|cutoff of DNA reads per kilobase at the maximum bin [default: 10].
 
 
 ## model
@@ -126,15 +125,15 @@ arguments|option|description
 ---|---|---
 `hdf5`|required|*HDF5* file with mapping information evaluated by *GridTools*.
 `-e/--elebed ELEBED`|required|*BED* file of regulatory elements (eg. enhancers and promoters).
-`-k/--rpk RPK`|optional|RPK of RNA reads from gene. [default: 100]
-`-x/--drpk DRPK`|optional|maximun RPK of interaction peak by gene [default: 10].
-`-z/--zscore ZSCORE`|optional|z-score to filter the significant proximity [default:none].
+`-k/--rpk RPK`|optional|cutoff of RNA reads per kilobase in the gene body. [default: 100]
+`-x/--drpk DRPK`|optional|cutoff of DNA reads per kilobase at the maximum bin [default: 10].
+`-z/--zscore ZSCORE`|optional|z-score to filter the significant proximity [default:-10].
 
 
 # Simple Code Example
-Below is a package of the test data and demo code for the GRID-seq analysis with test dataset at: `http://fugenome.ucsd.edu/gridseq/datasets/gridseq.test10M.raw.fq.gz`:
+The test data and demo code for the GRID-seq analysis with test dataset at: `http://fugenome.ucsd.edu/gridseq/datasets/gridseq.test10M.raw.fq.gz`:
 
-Demo code is in the gridtools/tests/test.sh
+Demo code is in the gridtools/pipeline/Snakefile.py
 
 
 # License
