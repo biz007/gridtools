@@ -34,6 +34,6 @@
 5. Run the pipeline
 ```
     source activate grid
-    snakemake -s Snakefile.py -np # Check
+    snakemake -s Snakefile.py
 ```
 
