@@ -524,6 +524,9 @@ class GridInfo(object):
             columns={'dchrom':'Chrom', 'dpos':'Pos'}
         )
         
+        ## remove non-chromosomal assembly, chrM/C
+        df = df[df.Chrom.isin(self.dfchrom.Chrom[self.dfchrom.main].values)]
+        
         dfpcc = df.set_index('Chrom').groupby('Chrom').apply(
             lambda x: self._kpcc(x.Pos.values, kbins)
         ).reset_index()
