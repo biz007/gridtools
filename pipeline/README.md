@@ -1,4 +1,5 @@
 # Pipeline to analyze test data
+# Version 1.1
 
 1. Download the *GridTools* and make it available
 ```

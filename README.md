@@ -1,4 +1,4 @@
-# GridTools
+# GridTools (release version 1.1)
 
 **GridTools** is a set of tools designed for analyzing GRID-seq data that genome-wide captures RNA-chromatin interactions.
 
