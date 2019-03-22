@@ -743,7 +743,7 @@ if __name__ == '__main__':
     pargs = argparse.ArgumentParser(
         description='Tools for processing and evaluation of GRID-seq library.'
     )
-    pargs.add_argument('--version', action='version', version='Version: %(prog)s 1.2')
+    pargs.add_argument('--version', action='version', version='Version: %(prog)s 1.1')
     subpargs = pargs.add_subparsers(dest='cmd')
     
     pargs_mate = subpargs.add_parser('matefq', help='parse bamfile to RNA/DNA mate fastq.')

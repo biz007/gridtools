@@ -1,6 +1,8 @@
 """
 GRID-seq workflow in Nat. Protocol
+Version: 1.1
 """
+
 import os
 
 # Setting of genome
@@ -74,7 +76,7 @@ rule align_linker:
     shell:
         """
         bwa mem -t {threads} -k 5 -L 4 -B 2 -O 4 {params.linkeridx} {input.fq} | \\
-        samtools view -ub | samtools sort -@ {threads} -m 4G -T {output.bam} -o {output.bam}
+        samtools sort -@ {threads} -m 4G -T {output.bam} -o {output.bam}
         samtools index -@ {threads} {output.bam}
         """    
 
@@ -119,9 +121,10 @@ rule align_genome:
     shell:
         """
         bwa mem -t {threads} -k 17 -w 1 -T 1 -p {params.idx} {input.fq} | \\
+        samtools view -ubq 1 | \\
         samtools sort -@ {threads} -n -m 1G -T {output.mbam} | \\
         samtools fixmate -@ {threads} -pm - - | \\
-        samtools view -@ {threads} -bf 0x1 | \\
+        samtools view -bf 0x1 | \\
         samtools sort -@ {threads} -m 1G -T {output.rbam} | \\
         samtools markdup -@ {threads} - {output.rbam}
         samtools index -@ {threads} {output.rbam}
